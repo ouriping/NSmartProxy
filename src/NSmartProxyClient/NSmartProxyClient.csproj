@@ -2,7 +2,7 @@
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>
-    <TargetFramework>net6.0</TargetFramework>
+    <TargetFramework>net8.0</TargetFramework>
     <PublishTrimmed>true</PublishTrimmed>
   </PropertyGroup>
 
@@ -17,8 +17,11 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="log4net" Version="2.0.17" />
+    <PackageReference Include="log4net" Version="3.3.2" />
     <PackageReference Include="Microsoft.Extensions.Configuration.Json" Version="8.0.0" />
+    <PackageReference Include="System.Net.Http" Version="4.3.4" />
+    <PackageReference Include="System.Text.Json" Version="8.0.5" />
+    <PackageReference Include="System.Text.RegularExpressions" Version="4.3.1" />
     <PackageReference Include="PeterKottas.DotNetCore.WindowsService" Version="2.0.12" />
 
     

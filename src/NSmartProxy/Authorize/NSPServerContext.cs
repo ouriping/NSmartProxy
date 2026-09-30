@@ -1,10 +1,12 @@
 ﻿using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using NSmartProxy.Data;
 using NSmartProxy.Data.Config;
+using NSmartProxy.Data.DBEntities;
 using NSmartProxy.Infrastructure;
 using NSmartProxy.Infrastructure.Interfaces;
 
@@ -13,13 +15,14 @@ namespace NSmartProxy.Authorize
     /// <summary>
     /// 存放服务端的状态，以供其他组件共享
     /// </summary>
-    public class NSPServerContext : IServerContext
+    public class NSPServerContext : IServerContext, IAuthSessionStore
     {
         public NSPClientCollection Clients;
         public Dictionary<int, NSPAppGroup> PortAppMap;//“地址:端口”和app的映射关系
         public Dictionary<int, NSPAppGroup> UDPPortAppMap;//UDP “地址:端口”和app的映射关系
         public NSPServerConfig ServerConfig;
         public HashSet<string> TokenCaches; //服务端会话池，登录后的会话都在这里，每天需要做定时清理
+        private readonly ConcurrentDictionary<string, AuthSession> _sessions = new ConcurrentDictionary<string, AuthSession>();
         public long TotalReceivedBytes; //TODO 统计进出数据 下行
         public long TotalSentBytes;//上行
         public long ConnectCount;//连接次数
@@ -40,6 +43,81 @@ namespace NSmartProxy.Authorize
         /// 支持客户端匿名登录
         /// </summary>        
         public bool SupportAnonymousLogin { get => ServerConfig.supportAnonymousLogin; set => ServerConfig.supportAnonymousLogin = value; }
+
+        public string IssueSession(User user)
+        {
+            return IssueSession(new AuthSession
+            {
+                UserName = user.userName,
+                UserId = user.userId,
+                IsAdmin = user.isAdmin == "1",
+                IsAnonymous = user.isAnonymous == "1",
+                MustChangePassword = user.mustChangePassword == "1"
+            });
+        }
+
+        public string IssueSession(AuthSession session)
+        {
+            if (session == null)
+            {
+                throw new ArgumentNullException(nameof(session));
+            }
+
+            var token = EncryptHelper.CreateSessionToken();
+            session.ExpiresUtc = DateTime.UtcNow.AddHours(8);
+            _sessions[token] = session;
+            TokenCaches.Add(token);
+            return token;
+        }
+
+        public AuthSession GetSession(string token)
+        {
+            if (string.IsNullOrEmpty(token))
+            {
+                return null;
+            }
+
+            AuthSession session;
+            if (!_sessions.TryGetValue(token, out session))
+            {
+                return null;
+            }
+
+            if (session.ExpiresUtc < DateTime.UtcNow)
+            {
+                RevokeSession(token);
+                return null;
+            }
+
+            return session;
+        }
+
+        public void RevokeSession(string token)
+        {
+            if (string.IsNullOrEmpty(token))
+            {
+                return;
+            }
+
+            AuthSession ignored;
+            _sessions.TryRemove(token, out ignored);
+            TokenCaches.Remove(token);
+        }
+
+        public void UpdateSession(string token, User user)
+        {
+            AuthSession session;
+            if (string.IsNullOrEmpty(token) || !_sessions.TryGetValue(token, out session) || user == null)
+            {
+                return;
+            }
+
+            session.UserName = user.userName;
+            session.UserId = user.userId;
+            session.IsAdmin = user.isAdmin == "1";
+            session.IsAnonymous = user.isAnonymous == "1";
+            session.MustChangePassword = user.mustChangePassword == "1";
+        }
 
         public string ServerConfigPath { get; set; }
 

@@ -9,9 +9,11 @@ namespace NSmartProxy.Data.Config
         public int ReversePort = 19974;   //服务端代理转发端口
         public int ConfigPort = 12308;    //服务端配置通讯端口
         public int WebAPIPort = 12309;    //远端管理端口
+        public string WebAPIAddress = "127.0.0.1"; //管理后台绑定地址，公网暴露请改为具体地址并放在 TLS 代理之后
         public int ReversePort_Out = 0;
         public int ConfigPort_Out = 0;
-        public bool supportAnonymousLogin = true;
+        public bool supportAnonymousLogin = false;
+        public bool ControlTlsEnabled = true;
 
         //[]
         public ServerBoundConfig BoundConfig = new ServerBoundConfig();//用户端口绑定列表

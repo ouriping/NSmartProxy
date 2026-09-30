@@ -74,12 +74,19 @@ namespace NSmartProxyWinService
             if (!loggerRepository.Configured) throw new Exception("log4net配置失败。log config failed.");
             Console.ForegroundColor = ConsoleColor.Yellow;
 
-            //用户登录
-            if (args.Length == 4)
+            //口令只从环境变量读取，避免出现在进程列表里。
+            if (args != null && Array.Exists(args, a => a == "-p" || a == "-pwd" || a == "--password" || a == "-u"))
+            {
+                Logger.Error("不要在服务参数里传入用户名或密码。请设置环境变量 NSP_USERNAME 和 NSP_PASSWORD。");
+            }
+
+            var envUser = Environment.GetEnvironmentVariable("NSP_USERNAME");
+            var envPwd = Environment.GetEnvironmentVariable("NSP_PASSWORD");
+            if (!string.IsNullOrEmpty(envUser))
             {
                 _currentLoginInfo = new LoginInfo();
-                _currentLoginInfo.UserName = args[1];
-                _currentLoginInfo.UserPwd = args[3];
+                _currentLoginInfo.UserName = envUser;
+                _currentLoginInfo.UserPwd = envPwd ?? "";
             }
 
             Logger.Info($"*** {NSPVersion.NSmartProxyClientName} ***");

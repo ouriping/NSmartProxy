@@ -1,23 +1,12 @@
-﻿#FROM microsoft/dotnet:2.2-sdk AS build
-#WORKDIR /app
-#
-## copy csproj and restore as distinct layers
-#COPY *.csproj ./
-#RUN dotnet restore
-#
-## copy everything else and build app
-#COPY . ./
-#RUN dotnet publish -c Release -o out
-#
-#FROM microsoft/dotnet:2.2-aspnetcore-runtime AS runtime
-#WORKDIR /app
-#COPY --from=build /app/out ./
-#EXPOSE 12300-22300
-#ENTRYPOINT ["dotnet", "NSmartProxy.ServerHost.dll"]
+﻿FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build
+WORKDIR /src
+COPY . .
+RUN dotnet publish src/NSmartProxy.ServerHost/NSmartProxy.ServerHost.csproj -c Release -o /out
 
-#need combile 1st.
-FROM mcr.microsoft.com/dotnet/sdk:6.0 AS runtime
+FROM mcr.microsoft.com/dotnet/aspnet:8.0
+RUN useradd --create-home --uid 10001 nsp
 WORKDIR /app
-COPY / /app/
-EXPOSE 12300-22300
+COPY --from=build /out .
+USER nsp
+EXPOSE 7841 7842
 ENTRYPOINT ["dotnet", "NSmartProxy.ServerHost.dll"]

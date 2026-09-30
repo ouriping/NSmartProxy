@@ -27,10 +27,10 @@ namespace FtpServer
         {
             clients = new List<FtpClient>();
             // listener = new TcpListener(ip, port);
-            listener = new TcpListener(IPAddress.Any, port);
+            listener = new TcpListener(IPAddress.Loopback, port);
             maxConnect = max_connect;
             // LocalIP = ip;
-            LocalIP = IPAddress.Any;
+            LocalIP = IPAddress.Loopback;
             Port = port;
             PasvPort = pasv_port;
             Users = users;

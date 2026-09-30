@@ -4,6 +4,7 @@ using System.Net;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
+using NSmartProxy.Infrastructure;
 
 namespace NSmartProxy.Extension
 {
@@ -15,7 +16,7 @@ namespace NSmartProxy.Extension
         /// <param name="CertificateName"></param>
         /// <param name="hosts"></param>
         /// <returns></returns>
-        public static X509Certificate2 GenerateCA(string CertificateName,string hosts = null)
+        public static X509Certificate2 GenerateCA(string CertificateName, string hosts = null, string pfxPassword = null)
         {
             SubjectAlternativeNameBuilder sanBuilder = new SubjectAlternativeNameBuilder();
             sanBuilder.AddIpAddress(IPAddress.Loopback);
@@ -52,8 +53,11 @@ namespace NSmartProxy.Extension
                 //certificate.FriendlyName = CertificateName;
                 //return certificate;
 
-                return new X509Certificate2(certificate.Export(X509ContentType.Pfx, "WeNeedASaf3rPassword"),
-                    "WeNeedASaf3rPassword", X509KeyStorageFlags.Exportable);
+                var password = string.IsNullOrEmpty(pfxPassword)
+                    ? EncryptHelper.CreatePassword(24)
+                    : pfxPassword;
+                return new X509Certificate2(certificate.Export(X509ContentType.Pfx, password),
+                    password, X509KeyStorageFlags.Exportable);
 
             }
         }

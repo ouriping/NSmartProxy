@@ -46,6 +46,13 @@ namespace NSmartProxy.Infrastructure.Extension
     }
 
     /// <summary>
+    /// 仅管理员可调用。匿名用户和普通用户不能访问。
+    /// </summary>
+    public class AdminOnlyAttribute : Attribute
+    {
+    }
+
+    /// <summary>
     /// 表示一个远程校验类
     /// </summary>
     public class ValidateAPIAttribute : Attribute

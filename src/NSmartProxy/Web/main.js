@@ -21,11 +21,7 @@ var basepath = "/";//api根地址,这里需要和配置文件一致
 
     function hashChanged(storedHash) {
         storedHash = loadContent(storedHash);
-        if (location.pathname.toUpperCase() !== "/LOGIN.HTML") {
-            if (getCookie("NSPTK").length < 1) {
-                location.href = "/login.html";
-            }
-        }
+        // 会话 Cookie 为 HttpOnly，脚本读不到。未登录访问管理页时由服务端拒绝。
     }
 
     function loadContent(storedHash) {
@@ -58,12 +54,25 @@ var basepath = "/";//api根地址,这里需要和配置文件一致
 
 )();
 
+function escapeJsString(value) {
+    return String(value == null ? "" : value).replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+}
+
+function escapeHtml(value) {
+    return String(value == null ? "" : value)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#39;");
+}
+
 function redAlert(msg) {
-    $("#red_alert span:first").html(msg);
+    $("#red_alert span:first").text(msg);
     $("#red_alert").show();
 }
 function greenAlert(msg) {
-    $("#green_alert span:first").html(msg);
+    $("#green_alert span:first").text(msg);
     $("#green_alert").show();
 }
 

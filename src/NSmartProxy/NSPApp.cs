@@ -7,6 +7,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.Threading.Tasks.Dataflow;
 using NSmartProxy.Data;
+using NSmartProxy.Infrastructure;
 using NSmartProxy.Infrastructure.Extensions;
 using NSmartProxy.Shared;
 
@@ -112,7 +113,7 @@ namespace NSmartProxy
                         {
                             try
                             {
-                                tcpClient.GetStream().Write(new byte[] { (byte)ControlMethod.ForceClose }, 0, 1);
+                                tcpClient.Open().Write(new byte[] { (byte)ControlMethod.ForceClose }, 0, 1);
                             }
                             catch (Exception ex)
                             {

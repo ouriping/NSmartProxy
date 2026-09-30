@@ -5,6 +5,7 @@ using System.IO;
 using System.Linq;
 using System.Net;
 using System.Net.Sockets;
+using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -96,9 +97,12 @@ namespace NSmartProxy
 
         public async Task Start()
         {
+            AuthSessionLocator.Find = token => ServerContext.GetSession(token);
             DbOp = new LiteDbOperator(USER_DB_PATH);//加载数据库
+            FileModeHelper.RestrictToOwner(USER_DB_PATH);
             //从配置文件加载服务端配置
             InitSecureKey();
+            InitControlCertificate();
             TaskScheduler.UnobservedTaskException += TaskScheduler_UnobservedTaskException;
             CancellationTokenSource ctsConfig = new CancellationTokenSource();
             CancellationTokenSource ctsHttp = new CancellationTokenSource();
@@ -115,7 +119,7 @@ namespace NSmartProxy
             if (ServerContext.ServerConfig.WebAPIPort > 0)
             {
                 var httpServer = new HttpServer(Logger, DbOp, ServerContext, new HttpServerApis(ServerContext, DbOp, "./log"));
-                _ = httpServer.StartHttpService(ctsHttp, ServerContext.ServerConfig.WebAPIPort);
+                _ = httpServer.StartHttpService(ctsHttp, ServerContext.ServerConfig.WebAPIPort, ServerContext.ServerConfig.WebAPIAddress);
             }
 
             //3.开启心跳检测线程 
@@ -144,16 +148,65 @@ namespace NSmartProxy
 
         private void InitSecureKey()
         {
-            //生成密钥
             if (File.Exists(SECURE_KEY_FILE_PATH))
             {
-                EncryptHelper.AES_Key = File.ReadAllText(SECURE_KEY_FILE_PATH);//prikey
+                EncryptHelper.AES_Key = File.ReadAllText(SECURE_KEY_FILE_PATH).Trim();
             }
             else
             {
-                EncryptHelper.AES_Key = RandomHelper.NextString(8);
+                var keyBytes = new byte[32];
+                using (var rng = RandomNumberGenerator.Create())
+                {
+                    rng.GetBytes(keyBytes);
+                }
+
+                EncryptHelper.AES_Key = Convert.ToBase64String(keyBytes);
                 File.WriteAllText(SECURE_KEY_FILE_PATH, EncryptHelper.AES_Key);
             }
+
+            FileModeHelper.RestrictToOwner(SECURE_KEY_FILE_PATH);
+        }
+
+        private void InitControlCertificate()
+        {
+            if (ServerContext.ServerConfig == null || !ServerContext.ServerConfig.ControlTlsEnabled)
+            {
+                ControlTls.ServerCertificate = null;
+                Logger.Info("控制通道 TLS 已关闭。公网部署不建议关闭。");
+                return;
+            }
+
+            const string certPath = "./nsmart_control.pfx";
+            const string pwdPath = "./nsmart_control.pwd";
+            var password = Environment.GetEnvironmentVariable("NSP_CERT_PASSWORD");
+            if (string.IsNullOrEmpty(password))
+            {
+                if (File.Exists(pwdPath))
+                {
+                    password = File.ReadAllText(pwdPath).Trim();
+                }
+                else
+                {
+                    password = EncryptHelper.CreatePassword(24);
+                    File.WriteAllText(pwdPath, password);
+                }
+            }
+
+            FileModeHelper.RestrictToOwner(pwdPath);
+            X509Certificate2 cert;
+            if (File.Exists(certPath))
+            {
+                cert = new X509Certificate2(certPath, password, X509KeyStorageFlags.Exportable);
+            }
+            else
+            {
+                cert = CAGen.GenerateCA("NSmartProxy-Control", null, password);
+                File.WriteAllBytes(certPath, cert.Export(X509ContentType.Pfx, password));
+            }
+
+            FileModeHelper.RestrictToOwner(certPath);
+            ControlTls.ServerCertificate = cert;
+            Logger.Info("控制通道 TLS 指纹（写入客户端 ProviderCertThumbprint）：" + cert.Thumbprint);
         }
 
         private async Task ProcessHeartbeatsCheck(int interval, CancellationTokenSource cts)
@@ -302,7 +355,7 @@ namespace NSmartProxy
                 try
                 {
                     var s2pClient = ConnectionManager.GetClientForUdp(consumerPort, null);
-                    var tunnelStream = s2pClient.GetStream();
+                    var tunnelStream = s2pClient.Open();
                     var nspApp = nspAppGroup.ActivateApp;
                     // method   ip(D)    port      buffer(D)
                     // udp      X        2         X
@@ -343,7 +396,7 @@ namespace NSmartProxy
         /// <param name="consumerEndPoint"></param>
         /// <returns></returns>
         private async Task OpenUdpTransmission(IPEndPoint FXXXconsumerEndPoint,//这个endpoint没有意义
-            NetworkStream providerStream, NSPAppGroup nspAppGrp, CancellationToken ct)
+            Stream providerStream, NSPAppGroup nspAppGrp, CancellationToken ct)
         {
             try
             {
@@ -413,7 +466,7 @@ namespace NSmartProxy
             var nspAppGroup = ServerContext.PortAppMap[consumerPort];
             NSPApp nspApp = null;
             TcpClient s2pClient = null;
-            Stream consumerStream = consumerClient.GetStream();
+            Stream consumerStream = consumerClient.Open();
             Stream providerStream = null;
             byte[] restBytes = null;
 
@@ -481,7 +534,7 @@ namespace NSmartProxy
             //客户端接收到此消息后，会另外分配一个备用连接
 
             //TODO 4 增加一个udp转发的选项
-            providerStream = s2pClient.GetStream();
+            providerStream = s2pClient.Open();
             //TODO 5 这里会出错导致无法和客户端通信
             try
             {
@@ -543,7 +596,8 @@ namespace NSmartProxy
                 //Server.Logger.Debug("config request received.");
 #endif
                 ServerContext.ClientConnectCount += 1;
-                var nstream = client.GetStream();
+                await ControlTls.HandshakeAsServerAsync(client);
+                var nstream = client.Open();
 
                 //0.读取协议名
                 int protoRequestLength = 1;
@@ -592,7 +646,7 @@ namespace NSmartProxy
         private async Task ProcessDisconnetClientProtocol(TcpClient client)
         {
             Server.Logger.Debug("Now processing Disconnet Client protocol....");
-            NetworkStream nstream = client.GetStream();
+            Stream nstream = client.Open();
             byte[] appRequestBytes = new byte[4];
             int resultByte = await nstream.ReadAsync(appRequestBytes, 0, appRequestBytes.Length, Global.DefaultConnectTimeout);
             //Server.Logger.Debug("appRequestBytes received.");
@@ -618,7 +672,7 @@ namespace NSmartProxy
         private async Task ProcessCloseClientProtocol(TcpClient client)
         {
             Server.Logger.Debug("Now processing CloseClient protocol....");
-            NetworkStream nstream = client.GetStream();
+            Stream nstream = client.Open();
             int closeClientLength = 2;
             byte[] appRequestBytes = new byte[closeClientLength];
             int resultByte = await nstream.ReadAsync(appRequestBytes, 0, appRequestBytes.Length, Global.DefaultConnectTimeout);
@@ -641,7 +695,7 @@ namespace NSmartProxy
         {
             //1.读取clientID
 
-            NetworkStream nstream = client.GetStream();
+            Stream nstream = client.Open();
             int heartBeatLength = 2;
             byte[] appRequestBytes = new byte[heartBeatLength];
             int resultByte = await nstream.ReadAsync(appRequestBytes, 0, appRequestBytes.Length, Global.DefaultConnectTimeout);
@@ -672,7 +726,7 @@ namespace NSmartProxy
                         if (peekedClient != null)
                         {
                             //发送保活数据
-                            await peekedClient.GetStream().WriteAndFlushAsync(new byte[] { (byte)ControlMethod.KeepAlive });
+                            await peekedClient.Open().WriteAndFlushAsync(new byte[] { (byte)ControlMethod.KeepAlive });
                         }
                     }
                 }
@@ -698,14 +752,14 @@ namespace NSmartProxy
         {
             Server.Logger.Debug("Now processing request protocol....");
             Logger.Debug("The client ip address is:" + client.Client.RemoteEndPoint.ToString());
-            NetworkStream nstream = client.GetStream();
+            Stream nstream = client.Open();
             int clientIdFromToken = 0;
 
             //1.读取配置请求1
             //TODO !!!!获取Token，截取clientID，校验
             //TODO !!!!这里的校验逻辑和httpserver_api存在太多重复，需要重构
             clientIdFromToken = await GetClientIdFromNextTokenBytes(client);
-            if (clientIdFromToken == 0)
+            if (clientIdFromToken == 0 || clientIdFromToken == -2)
             {
                 //TODO 2 服务端错误，校验失败
                 await nstream.WriteAsync(new byte[] { (byte)ServerStatus.AuthFailed });
@@ -785,7 +839,7 @@ namespace NSmartProxy
         /// <returns></returns>
         private async Task<int> GetClientIdFromNextTokenBytes(TcpClient client)
         {
-            NetworkStream nstream = client.GetStream();
+            Stream nstream = client.Open();
             int clientIdFromToken = 0;
             //1.1 获取token长度
             int tokenLengthLength = 2;
@@ -812,24 +866,28 @@ namespace NSmartProxy
             string token = tokenBytes.ToASCIIString();
             if (token != Global.NO_TOKEN_STRING)
             {
-                var tokenClaims = StringUtil.ConvertStringToTokenClaims(token);
-                var userJson = DbOp.Get(tokenClaims.UserKey);
-                if (userJson == null)
+                var session = ServerContext.GetSession(token);
+                if (session == null)
+                {
+                    Server.Logger.Debug("token验证失败或已过期");
+                }
+                else if (session.MustChangePassword)
+                {
+                    Server.Logger.Debug("用户必须先修改初始密码，已拒绝建立隧道");
+                    return -2;
+                }
+                else if (ServerContext.ServerConfig.BoundConfig.UsersBanlist.Contains(session.UserId))
+                {
+                    Server.Logger.Debug("用户被禁用");
+                    return -1;
+                }
+                else if (string.IsNullOrEmpty(session.UserId))
                 {
                     Server.Logger.Debug("token验证失败");
                 }
                 else
                 {
-                    var userId = userJson.ToObject<User>().userId;
-                    if (ServerContext.ServerConfig.BoundConfig.UsersBanlist.Contains(userId))
-                    {
-                        Server.Logger.Debug("用户被禁用");
-                        return -1;
-                    }
-                    else
-                    {
-                        clientIdFromToken = int.Parse(userId);
-                    }
+                    clientIdFromToken = int.Parse(session.UserId);
                 }
             }
 

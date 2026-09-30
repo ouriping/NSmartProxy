@@ -68,10 +68,10 @@
                 var statusHtml = "";
                 statusHtml = (co.blocksCount == "1") ? htmlGood : htmlBroken;
                 html += " <tr>" +
-                    " <td>" + co.port + "(" + co.protocol + "," + co.host + ")</td >" +
-                    "<td>" + co.clientId + "</td>" +
-                    "<td>" + co.appId + "</td>" +
-                    "<td>" + co.description + "</td>" +
+                    " <td>" + escapeHtml(co.port) + "(" + escapeHtml(co.protocol) + "," + escapeHtml(co.host) + ")</td >" +
+                    "<td>" + escapeHtml(co.clientId) + "</td>" +
+                    "<td>" + escapeHtml(co.appId) + "</td>" +
+                    "<td>" + escapeHtml(co.description) + "</td>" +
                     "<td>" + statusHtml + "</td>" +
                     "<td>连接数：" + co.revconns.length + "，隧道数：" + co.tunnels.length + "</td>" +
                     "</tr>" +
@@ -81,8 +81,8 @@
                     var tunnel = co.tunnels[j];
                     if (tunnel.consumerClient == undefined) tunnel.consumerClient = "已断开";
                     if (tunnel.clientServerClient == undefined) tunnel.clientServerClient = "已断开";
-                    html += "外网:" + tunnel.consumerClient + "&nbsp;";
-                    html += "内网:" + tunnel.clientServerClient;
+                    html += "外网:" + escapeHtml(tunnel.consumerClient) + "&nbsp;";
+                    html += "内网:" + escapeHtml(tunnel.clientServerClient);
                     html += "<br />";
                 }
 

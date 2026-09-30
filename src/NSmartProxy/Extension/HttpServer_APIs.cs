@@ -35,15 +35,75 @@ namespace NSmartProxy.Extension
             Dbop = dbOperator;
             baseLogFilePath = logfilePath;
 
-            //如果库中没有任何记录，则增加默认用户
-            if (Dbop.GetLength() < 1)
+            EnsureInitialAdmin();
+        }
+
+        private void EnsureInitialAdmin()
+        {
+            if (Dbop.GetLength() >= 1)
             {
-                AddUserV2("admin", "admin", "1");
+                return;
             }
+
+            var password = EncryptHelper.CreatePassword(20);
+            var user = new User
+            {
+                userId = SUPER_VARIABLE_INDEX_ID,
+                userName = "admin",
+                userPwd = EncryptHelper.HashPassword(password),
+                regTime = DateTime.Now.ToString(),
+                isAdmin = "1",
+                isAnonymous = "0",
+                mustChangePassword = "1"
+            };
+            Dbop.Insert("admin", user.ToJsonString());
+            Console.WriteLine("首次启动已创建管理员 admin，初始密码只显示这一次：");
+            Console.WriteLine(password);
+            Console.WriteLine("登录后必须立即修改密码。修改前不会接受客户端隧道。");
+        }
+
+        private bool CheckPassword(User user, string password)
+        {
+            bool needsUpgrade;
+            if (user == null || !EncryptHelper.VerifyPassword(password, user.userPwd, out needsUpgrade))
+            {
+                return false;
+            }
+
+            if (needsUpgrade)
+            {
+                user.userPwd = EncryptHelper.HashPassword(password);
+                Dbop.UpdateByName(user.userName, user.userName, user.ToJsonString());
+            }
+
+            return true;
+        }
+
+        private void SetSessionCookie(string token)
+        {
+            var cookie = Global.TOKEN_COOKIE_NAME + "=" + token + "; Path=/; HttpOnly; SameSite=Strict; Max-Age=28800";
+            if (HttpContext.Request.IsSecureConnection)
+            {
+                cookie += "; Secure";
+            }
+
+            HttpContext.Response.Headers.Add("Set-Cookie", cookie);
+        }
+
+        private AuthSession CurrentSession()
+        {
+            var cookie = HttpContext?.Request?.Cookies[Global.TOKEN_COOKIE_NAME];
+            if (cookie == null)
+            {
+                return null;
+            }
+
+            return ServerContext.GetSession(cookie.Value);
         }
 
         #region  dashboard
         [Secure]
+        [AdminOnly]
         [API]
         public ServerStatusDTO GetServerStatus()
         {
@@ -59,6 +119,7 @@ namespace NSmartProxy.Extension
         }
 
         [Secure]
+        [AdminOnly]
         [API]
         public UserStatusDTO GetUserStatus()
         {
@@ -81,10 +142,19 @@ namespace NSmartProxy.Extension
 
         #region log
         [Secure]
+        [AdminOnly]
         [API]
         public string[] GetLogFileInfo(string lastLines)
         {
             int lastLinesInt = int.Parse(lastLines);
+            if (lastLinesInt < 1)
+            {
+                lastLinesInt = 1;
+            }
+            if (lastLinesInt > 1000)
+            {
+                lastLinesInt = 1000;
+            }
             string baseLogPath = "./log";
             DirectoryInfo dir = new DirectoryInfo(baseLogPath);
             FileInfo[] files = dir.GetFiles("*.log*");
@@ -114,20 +184,33 @@ namespace NSmartProxy.Extension
         /// <param name="filekey"></param>
         /// <returns></returns>
         [Secure]
+        [AdminOnly]
         [FileAPI]
         public FileDTO GetLogFile(string filekey)
         {
-            string allowedSuffix = ".log";
-            string suffix = Path.GetExtension(filekey);
-            string fileName = Path.GetFileName(filekey);
-            string fileFullPath = baseLogFilePath + "/" + filekey;
-            if (allowedSuffix == suffix)
+            var root = Path.GetFullPath(string.IsNullOrEmpty(baseLogFilePath) ? "./log" : baseLogFilePath);
+            var name = Path.GetFileName(filekey ?? "");
+            if (string.IsNullOrEmpty(name) || !name.EndsWith(".log", StringComparison.OrdinalIgnoreCase))
+            {
+                Server.Logger.Error("非法日志名", new Exception(filekey));
+                return null;
+            }
+
+            var fileFullPath = Path.GetFullPath(Path.Combine(root, name));
+            var rootPrefix = root.TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+            if (!fileFullPath.StartsWith(rootPrefix, StringComparison.Ordinal))
+            {
+                Server.Logger.Error("非法日志路径", new Exception(filekey));
+                return null;
+            }
+
+            if (File.Exists(fileFullPath))
             {
                 var fs = new FileStream(fileFullPath, FileMode.Open, FileAccess.Read,
                     FileShare.Delete | FileShare.ReadWrite);
                 return new FileDTO()
                 {
-                    FileName = filekey,
+                    FileName = name,
                     FileStream = fs
                 };
             }
@@ -138,6 +221,7 @@ namespace NSmartProxy.Extension
         }
 
         [Secure]
+        [AdminOnly]
         [API]
         public string[] GetLogFiles()
         {
@@ -154,6 +238,7 @@ namespace NSmartProxy.Extension
 
         [API]
         [Secure]
+        [AdminOnly]
         public string SetConfig(string key, string value)
         {
             switch (key)
@@ -170,6 +255,7 @@ namespace NSmartProxy.Extension
 
         [API]
         [Secure]
+        [AdminOnly]
         public string GetConfig(string key)
         {
             switch (key)
@@ -181,6 +267,7 @@ namespace NSmartProxy.Extension
         }
 
         [API]
+        [Secure]
         public ServerPortsDTO GetServerPorts()
         {
             var config = ServerContext.ServerConfig;
@@ -206,32 +293,58 @@ namespace NSmartProxy.Extension
         [FormAPI]
         public string Login(string username, string userpwd)
         {
-            //1.校验
-            dynamic user = Dbop.Get(username)?.ToDynamic();
-            if (user == null)
+            var stored = Dbop.Get(username);
+            if (stored == null)
             {
                 return "Error: User not exist.Please <a href='javascript:history.go(-1)'>go backward</a>.";
             }
 
+            User user = stored.ToObject<User>();
 
-            if (user.userPwd != EncryptHelper.SHA256(userpwd))
+
+            if (!CheckPassword(user, userpwd))
             {
                 return "Error: Wrong password.Please <a href='javascript:history.go(-1)'>go backward</a>.";
             }
 
-            //2.给token
-            string output = $"{username}|{DateTime.Now.ToString("yyyy-MM-dd")}";
-            string token = EncryptHelper.AES_Encrypt(output);
-            return string.Format(@"
-<html>
-<head><script>
-document.cookie='{0}={1}; path=/;';
-document.write('Redirecting...');
-window.location.href='main.html';
-</script>
-</head>
-</html>
-            ", Global.TOKEN_COOKIE_NAME, token);
+            string token = ServerContext.IssueSession(user);
+            SetSessionCookie(token);
+            var next = user.mustChangePassword == "1" ? "changepassword.html" : "main.html";
+            return "<html><head><meta http-equiv=\"refresh\" content=\"0;url=" + next + "\"></head><body>Redirecting...</body></html>";
+        }
+
+        [FormAPI]
+        [Secure]
+        public string ChangePassword(string oldPwd, string newPwd)
+        {
+            var session = CurrentSession();
+            if (session == null)
+            {
+                return "Error: 未登录。";
+            }
+
+            var user = Dbop.Get(session.UserName)?.ToObject<User>();
+            if (user == null || !CheckPassword(user, oldPwd))
+            {
+                return "Error: 原密码不正确。";
+            }
+
+            if (string.IsNullOrEmpty(newPwd) || newPwd.Length < 12)
+            {
+                return "Error: 新密码至少 12 位。";
+            }
+
+            user.userPwd = EncryptHelper.HashPassword(newPwd);
+            user.mustChangePassword = "0";
+            Dbop.UpdateByName(user.userName, user.userName, user.ToJsonString());
+            ServerContext.UpdateSession(sessionToken(session), user);
+            return "<html><head><meta http-equiv=\"refresh\" content=\"0;url=main.html\"></head><body>密码已更新。</body></html>";
+        }
+
+        private string sessionToken(AuthSession session)
+        {
+            var cookie = HttpContext.Request.Cookies[Global.TOKEN_COOKIE_NAME];
+            return cookie == null ? null : cookie.Value;
         }
 
         /// <summary>
@@ -254,7 +367,7 @@ window.location.href='main.html';
                 {
                     userId = SUPER_VARIABLE_INDEX_ID,  //索引id
                     userName = username,
-                    userPwd = EncryptHelper.SHA256(userpwd),
+                    userPwd = EncryptHelper.HashPassword(userpwd),
                     regTime = DateTime.Now.ToString(),
                     isAdmin = "0",
                     isAnonymous = "1"
@@ -276,14 +389,17 @@ window.location.href='main.html';
                 throw new Exception("Error: User has banned.");
             }
 
-            if (user.userPwd != EncryptHelper.SHA256(userpwd))
+            if (!CheckPassword(user, userpwd))
             {
                 throw new Exception("error: wrong password.");
             }
 
-            //2.给token
-            string output = $"{username}|{DateTime.Now.ToString("yyyy-MM-dd")}";
-            string token = EncryptHelper.AES_Encrypt(output);
+            if (user.mustChangePassword == "1")
+            {
+                throw new Exception("必须先在管理页面修改初始密码，之后才能登录客户端。");
+            }
+
+            string token = ServerContext.IssueSession(user);
             return new LoginFormClientResult { Token = token, Version = NSPVersion.NSmartProxyServerName, Userid = user.userId };
         }
         #endregion
@@ -298,6 +414,7 @@ window.location.href='main.html';
         /// <param name="isAdmin">1代表是 0代表否</param>
         [API]
         [Secure]
+        [AdminOnly]
         public void AddUserV2(string userName, string userpwd, string isAdmin)
         {
 
@@ -309,7 +426,7 @@ window.location.href='main.html';
             {
                 userId = SUPER_VARIABLE_INDEX_ID,  //索引id
                 userName = userName,
-                userPwd = EncryptHelper.SHA256(userpwd),
+                userPwd = EncryptHelper.HashPassword(userpwd),
                 regTime = DateTime.Now.ToString(),
                 isAdmin = isAdmin
             };
@@ -326,6 +443,7 @@ window.location.href='main.html';
         /// <param name="isAdmin">1代表是 0代表否</param>
         [API]
         [Secure]
+        [AdminOnly]
         public void UpdateUser(string oldUserName, string newUserName, string userPwd, string isAdmin)
         {
 
@@ -350,7 +468,8 @@ window.location.href='main.html';
             user.userName = newUserName;
             if (userPwd != "XXXXXXXX")
             {
-                user.userPwd = EncryptHelper.SHA256(userPwd);
+                user.userPwd = EncryptHelper.HashPassword(userPwd);
+                user.mustChangePassword = "0";
             }
 
             //if (isAdmin == true) user.
@@ -362,6 +481,7 @@ window.location.href='main.html';
 
         [API]
         [Secure]
+        [AdminOnly]
         public void RemoveUser(string userIndex, string userNames)
         {
             try
@@ -400,6 +520,7 @@ window.location.href='main.html';
 
         [API]
         [Secure]
+        [AdminOnly]
         public List<string> GetUsers()
         {
             List<string> userStrList = Dbop.Select(0, 999);
@@ -417,6 +538,7 @@ window.location.href='main.html';
                 //
 
                 user.isOnline = ServerContext.Clients.ContainsKey(int.Parse(user.userId)).ToString().ToLower();
+                user.userPwd = "";
 
                 userStrList[i] = user.ToJsonString();
             }
@@ -427,6 +549,7 @@ window.location.href='main.html';
 
         [ValidateAPI]
         [Secure]
+        [AdminOnly]
         public bool ValidateUserName(string isEdit, string oldUsername, string newUserName)
         {
             if (isEdit == "1" && oldUsername == newUserName)
@@ -442,11 +565,19 @@ window.location.href='main.html';
         [Secure]
         public NSPClientConfig GetServerClientConfig(string userId = null)
         {
+            var session = CurrentSession();
+            if (session == null)
+            {
+                throw new Exception("用户未登录。");
+            }
+
             if (String.IsNullOrWhiteSpace(userId))
             {
-                var claims =
-                    StringUtil.ConvertStringToTokenClaims(HttpContext.Request.Cookies[Global.TOKEN_COOKIE_NAME].Value);
-                userId = claims.UserKey;
+                userId = session.UserName;
+            }
+            else if (!session.IsAdmin && userId != session.UserName && userId != session.UserId)
+            {
+                throw new Exception("无权读取其他用户的配置。");
             }
 
             var config = Dbop.GetConfig(userId)?.ToObject<NSPClientConfig>();
@@ -455,6 +586,7 @@ window.location.href='main.html';
 
         [API]
         [Secure]
+        [AdminOnly]
         public void SetServerClientConfig(string userName, string config)
         {
             NSPClientConfig nspClientConfig = null;
@@ -497,6 +629,7 @@ window.location.href='main.html';
         //NoApi Auth
         [API]
         [Secure]
+        [AdminOnly]
         public string GetClientsInfoJson()
         {
             var connectionManager = ClientConnectionManager.GetInstance();
@@ -606,6 +739,7 @@ window.location.href='main.html';
         /// <returns></returns>
         [API]
         [Secure]
+        [AdminOnly]
         public bool CloseClient(string clientIdStr)
         {
             if (ServerContext == null) return false;
@@ -630,6 +764,7 @@ window.location.href='main.html';
         /// <returns></returns>
         [API]
         [Secure]
+        [AdminOnly]
         public bool BanUsers(string clientIdStr, string addToBanlist = "1")
         {
             if (ServerContext == null) return false;
@@ -660,6 +795,7 @@ window.location.href='main.html';
 
         [API]
         [Secure]
+        [AdminOnly]
         public bool UnBanUsers(string clientIdStr)
         {
             if (ServerContext == null) return false;
@@ -686,6 +822,7 @@ window.location.href='main.html';
         /// <returns></returns>
         [API]
         [Secure]
+        [AdminOnly]
         public string BindUserToPort(string userId, string ports)
         {
             List<int> portsList = null;
@@ -757,6 +894,7 @@ window.location.href='main.html';
         #region ca
         [API]
         [Secure]
+        [AdminOnly]
         public List<CertDTO> GetAllCA()
         {
             List<CertDTO> caList = new List<CertDTO>();
@@ -792,11 +930,18 @@ window.location.href='main.html';
 
         [API]
         [Secure]
+        [AdminOnly]
         public string GenerateCA(string hosts)
         {
             var caName = RandomHelper.NextString(10, false);
-            X509Certificate2 ca = CAGen.GenerateCA(caName, hosts);
-            var export = ca.Export(X509ContentType.Pfx);
+            var pfxPassword = Environment.GetEnvironmentVariable("NSP_CERT_PASSWORD");
+            if (string.IsNullOrEmpty(pfxPassword))
+            {
+                pfxPassword = EncryptHelper.CreatePassword(24);
+            }
+
+            X509Certificate2 ca = CAGen.GenerateCA(caName, hosts, pfxPassword);
+            var export = ca.Export(X509ContentType.Pfx, pfxPassword);
             string baseLogPath = "./temp";
             string fileName = "_" + caName + ".pfx";
             string targetPath = baseLogPath + "/" + fileName;
@@ -808,11 +953,16 @@ window.location.href='main.html';
 
             // File.Move(fileInfo.FullName, baseLogPath + "/" + port + ".pfx");
             File.WriteAllBytes(targetPath, export);
+            File.WriteAllText(targetPath + ".password", pfxPassword);
+            FileModeHelper.RestrictToOwner(targetPath);
+            FileModeHelper.RestrictToOwner(targetPath + ".password");
+            Server.Logger.Info("证书已生成，口令写在 " + targetPath + ".password");
             return fileName;
         }
 
         [FileUpload]
         [Secure]
+        [AdminOnly]
         public string UploadTempFile(FileInfo fileInfo)
         {
             string baseLogPath = "./temp";
@@ -830,6 +980,7 @@ window.location.href='main.html';
 
         [API]
         [Secure]
+        [AdminOnly]
         public string AddCABound(string port, string filename)
         {
             if (!port.IsNum()) throw new Exception("port不是数字");
@@ -853,6 +1004,7 @@ window.location.href='main.html';
 
         [API]
         [Secure]
+        [AdminOnly]
         public string DelCAFile(string filename)
         {
             //if (!port.IsNum()) throw new Exception("port不是数字");
@@ -874,6 +1026,7 @@ window.location.href='main.html';
 
         [API]
         [Secure]
+        [AdminOnly]
         public string DelCABound(string port)
         {
             if (!port.IsNum()) throw new Exception("port不是数字");
