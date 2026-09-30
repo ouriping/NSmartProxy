@@ -11,6 +11,7 @@ using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Timers;
+using System.IO.Pipelines;
 using NSmartProxy.Data;
 using NSmartProxy.Extension;
 using NSmartProxy.Infrastructure;
@@ -22,6 +23,7 @@ using NSmartProxy.Shared;
 using static NSmartProxy.Server;
 using NSmartProxy.Database;
 using NSmartProxy.Infrastructure.Extension;
+using System.Collections.Concurrent;
 
 namespace NSmartProxy
 {
@@ -54,6 +56,7 @@ namespace NSmartProxy
         protected ClientConnectionManager ConnectionManager = null;
         protected IDbOperator DbOp;
         protected NSPServerContext ServerContext;
+        private ConcurrentDictionary<int, CancellationTokenSource> transferTokenDic = new ConcurrentDictionary<int, CancellationTokenSource>();
 
         internal static INSmartLogger Logger; //inject
 
@@ -62,6 +65,7 @@ namespace NSmartProxy
             //initialize
             Logger = logger;
             ServerContext = new NSPServerContext();
+            Global.Logger = logger;
         }
 
         /// <summary>
@@ -316,7 +320,7 @@ namespace NSmartProxy
                             //传回连接 (异步)
                             nspAppGroup.UdpTransmissionTask = OpenUdpTransmission(receiveResult.RemoteEndPoint, tunnelStream, nspAppGroup, ct);
                         }
-                    //int x = 1;
+                        //int x = 1;
                     }
                 }
                 catch (Exception ex)
@@ -428,7 +432,7 @@ namespace NSmartProxy
                     { Server.Logger.Debug("未在请求中找到主机名"); return; }
 
                     string host = tp.Item1;
-                    restBytes = Encoding.UTF8.GetBytes(tp.Item2); //预发送bytes，因为这部分用来抓host消费掉了
+                    restBytes = tp.Item2; //预发送bytes，因为这部分用来抓host消费掉了
                     //restBytesLength = tp.Item3;
                     s2pClient = await ConnectionManager.GetClientForTcp(consumerPort, host);
                     if (nspAppGroup.ContainsKey(host))
@@ -470,6 +474,8 @@ namespace NSmartProxy
             //II.弹出先前已经准备好的socket
             tunnel.ClientServerClient = s2pClient;
             CancellationTokenSource transfering = new CancellationTokenSource();
+            transferTokenDic.TryAdd(transfering.GetHashCode(), transfering);
+            Server.Logger.Debug("记录一个连接的中断控制token：" + transfering.Token.GetHashCode().ToString());
             //✳关键过程✳
             //III.发送一个字节过去促使客户端建立转发隧道，至此隧道已打通
             //客户端接收到此消息后，会另外分配一个备用连接
@@ -479,7 +485,10 @@ namespace NSmartProxy
             //TODO 5 这里会出错导致无法和客户端通信
             try
             {
-                await providerStream.WriteAndFlushAsync(new byte[] { (byte)ControlMethod.TCPTransfer }, 0, 1);//双端标记S0001
+                var bytes = new List<byte> { (byte)ControlMethod.TCPTransfer };
+                bytes.AddRange(BitConverter.GetBytes(transfering.GetHashCode()));
+                //向客户端发送一个主动建立TCP连接的标记
+                await providerStream.WriteAndFlushAsync(bytes.ToArray(), 0, 5);//双端标记S0001
             }
             catch
             {
@@ -564,6 +573,9 @@ namespace NSmartProxy
                     case ServerProtocol.Reconnect:
                         await ProcessAppRequestProtocol(client, true);
                         break;
+                    case ServerProtocol.Disconnet:
+                        await ProcessDisconnetClientProtocol(client);
+                        break;
                     default:
                         throw new Exception("接收到异常请求。");
                 }
@@ -575,6 +587,32 @@ namespace NSmartProxy
                 throw;
             }
 
+        }
+
+        private async Task ProcessDisconnetClientProtocol(TcpClient client)
+        {
+            Server.Logger.Debug("Now processing Disconnet Client protocol....");
+            NetworkStream nstream = client.GetStream();
+            byte[] appRequestBytes = new byte[4];
+            int resultByte = await nstream.ReadAsync(appRequestBytes, 0, appRequestBytes.Length, Global.DefaultConnectTimeout);
+            //Server.Logger.Debug("appRequestBytes received.");
+            if (resultByte < 1)
+            {
+                Server.Logger.Debug("服务端read失败，关闭连接");
+                client.Client.Close();
+                return;
+            }
+            int tokenId = BitConverter.ToInt32(appRequestBytes, 0);
+            try
+            {
+                transferTokenDic[tokenId].Cancel();
+                Server.Logger.Debug($"执行断开用户链接{tokenId}成功。");
+            }
+            catch (Exception ex)
+            {
+                Server.Logger.Error($"执行断开用户链接{tokenId}失败！！！", ex);
+            }
+            client.Close();
         }
 
         private async Task ProcessCloseClientProtocol(TcpClient client)
@@ -659,6 +697,7 @@ namespace NSmartProxy
         private async Task<bool> ProcessAppRequestProtocol(TcpClient client, bool IsReconnect = false)
         {
             Server.Logger.Debug("Now processing request protocol....");
+            Logger.Debug("The client ip address is:" + client.Client.RemoteEndPoint.ToString());
             NetworkStream nstream = client.GetStream();
             int clientIdFromToken = 0;
 
@@ -681,7 +720,8 @@ namespace NSmartProxy
                 return false;
             }
 
-            ServerContext.CloseAllSourceByClient(clientIdFromToken);
+            //强制下线其他客户端
+            ServerContext.CloseAllSourceByClient(clientIdFromToken, isForceClose: true);
 
             //1.3 获取客户端请求数
             int configRequestLength = 3;
@@ -702,7 +742,7 @@ namespace NSmartProxy
             //2    1     1                   1024         96         
             byte[] consumerPortBytes = new byte[appCount * (2 + 1 + 1 + 1024 + 96)];//TODO 2 暂时这么写，亟需修改
             int resultByte2 = await nstream.ReadNextSTLengthBytes(consumerPortBytes);
-           // int resultBytetest = await nstream.ReadAsyncEx(consumerPortBytes);
+            // int resultBytetest = await nstream.ReadAsyncEx(consumerPortBytes);
             //Server.Logger.Debug("consumerPortBytes received.");
             if (resultByte2 < 1)
             {
@@ -832,20 +872,28 @@ namespace NSmartProxy
                 try
                 {
                     int bytesRead;
-                    while ((bytesRead =
-                               await fromStream.ReadAsync(buffer, 0, buffer.Length, ct).ConfigureAwait(false)) != 0)
+                    if (nspApp.IsCompress)
                     {
-                        if (nspApp.IsCompress)
+                        while (!ct.IsCancellationRequested)
                         {
-                            var compressBuffer = StringUtil.DecompressInSnappy(buffer, 0, bytesRead);
+                            //Array.Resize(array: ref buffer, newSize: bytesRead);//此处存在copy，需要看看snappy是否支持偏移量数组
+                            byte[] bufferCompressed = await fromStream.ReadNextQLengthBytes();
+                            if (bufferCompressed.Length == 0) break;
+                            var compressBuffer = StringUtil.DecompressInSnappy(bufferCompressed,0,bufferCompressed.Length);
                             bytesRead = compressBuffer.Length;
                             await toStream.WriteAsync(compressBuffer, 0, bytesRead, ct).ConfigureAwait(false);
                         }
-                        else
+                    }
+                    else
+                    {
+                        while ((bytesRead =
+                                   await fromStream.ReadAsync(buffer, 0, buffer.Length, ct).ConfigureAwait(false)) != 0)
                         {
+
                             await toStream.WriteAsync(buffer, 0, bytesRead, ct).ConfigureAwait(false);
+
+                            ServerContext.TotalSentBytes += bytesRead; //上行
                         }
-                        ServerContext.TotalSentBytes += bytesRead; //上行
                     }
                 }
                 catch (Exception ioe)
@@ -869,10 +917,13 @@ namespace NSmartProxy
                     {
                         if (nspApp.IsCompress)
                         {
-                            var compressInSnappy = StringUtil.CompressInSnappy(buffer, 0, bytesRead);
-                            var compressedBuffer = compressInSnappy.ContentBytes;
-                            bytesRead = compressInSnappy.Length;
-                            await toStream.WriteAsync(compressedBuffer, 0, bytesRead, ct).ConfigureAwait(false);
+                            //Array.Resize(array: ref buffer, newSize: bytesRead);//此处存在copy，需要看看snappy是否支持偏移量数组
+                            var compressInSnappy = StringUtil.CompressInSnappy(buffer,0,bytesRead);
+                            //var compressedBuffer = compressInSnappy.ContentBytes;
+                           // bytesRead = compressInSnappy.Length;
+                            //TODO 封包传送
+                            if (ct.IsCancellationRequested) { Global.Logger.Info("=传输外部中止="); return; }
+                            await toStream.WriteQLengthBytes(compressInSnappy.ContentBytes, compressInSnappy.Length).ConfigureAwait(false);
                         }
                         else
                         {
@@ -893,9 +944,18 @@ namespace NSmartProxy
         {
             if (client.Connected)
             {
-                Logger.Debug("invalid request,Closing client:" + client.Client.RemoteEndPoint.ToString());
+                string remote = "unknown";
+                try
+                {
+                    remote = client.Client.RemoteEndPoint.ToString();
+                }
+                catch (Exception ex)
+                {
+                    Logger.Error("get client remote address fail:", ex);
+                }
+                Logger.Debug("invalid request,Closing client:" + remote);
                 client.Close();
-                Logger.Debug("Closed client:" + client.Client.RemoteEndPoint.ToString());
+                Logger.Debug("Closed client:" + remote);
             }
         }
 
@@ -903,28 +963,142 @@ namespace NSmartProxy
         #endregion
 
         #region http
-        private async Task<Tuple<string, string>> ReadHostName(Stream consumerStream)
+        private async Task<Tuple<string, byte[]>> ReadHostName(Stream consumerStream)
         {
-            //需要进一步截包 TODO 2 待优化1.内存优化 2.查询优化
-            const int BUFFER_SIZE = 1024 * 1024 * 2;
-            var length = 0;
-            var data = string.Empty;
-            var bytes = new byte[BUFFER_SIZE];
+            const int MaxHeaderBytes = 32 * 1024;
 
-            do
-            {//item2:data item1:host
-                length = await consumerStream.ReadAsync(bytes, 0, BUFFER_SIZE);
-                data += Encoding.UTF8.GetString(bytes, 0, length);
-            } while (length > 0 && !data.Contains("\r\n\r\n"));
+            var reader = PipeReader.Create(consumerStream);
+            try
+            {
+                while (true)
+                {
+                    ReadResult result = await reader.ReadAsync().ConfigureAwait(false);
+                    ReadOnlySequence<byte> buffer = result.Buffer;
 
-            if (length == 0) return null;
-            Regex reg = new Regex("\r\nhost: (.*?)\r\n");
+                    SequencePosition? headerEndPosition = buffer.PositionOf((byte)'\r');
+                    int headerEndIndex = -1;
 
-            return new Tuple<string, string>(
-                reg.Match(data.ToLower()).Groups[1].Value,//需要进一步优化，使用list<byte[]>
-                data
+                    if (!buffer.IsEmpty)
+                    {
+                        var span = buffer.ToArray();
+                        headerEndIndex = IndexOfHeaderTerminator(span);
 
-                );
+                        if (headerEndIndex >= 0)
+                        {
+                            // Header includes the final "\r\n\r\n"
+                            int headerLength = headerEndIndex + 4;
+                            string host = TryParseHostFromHeader(span, headerLength);
+                            if (string.IsNullOrEmpty(host))
+                            {
+                                // consume what we have so far to avoid infinite loop
+                                reader.AdvanceTo(buffer.End);
+                                return null;
+                            }
+
+                            // We already read some bytes beyond Host parsing; forward them all.
+                            reader.AdvanceTo(buffer.End);
+                            return new Tuple<string, byte[]>(host, span);
+                        }
+
+                        if (span.Length > MaxHeaderBytes)
+                        {
+                            reader.AdvanceTo(buffer.End);
+                            return null;
+                        }
+                    }
+
+                    // Not enough data yet; keep everything buffered and ask for more
+                    reader.AdvanceTo(buffer.Start, buffer.End);
+
+                    if (result.IsCompleted)
+                    {
+                        return null;
+                    }
+                }
+            }
+            finally
+            {
+                await reader.CompleteAsync().ConfigureAwait(false);
+            }
+        }
+
+        private static int IndexOfHeaderTerminator(byte[] data)
+        {
+            // Find "\r\n\r\n" and return index of the first '\r' in that sequence
+            for (int i = 0; i <= data.Length - 4; i++)
+            {
+                if (data[i] == (byte)'\r' && data[i + 1] == (byte)'\n' && data[i + 2] == (byte)'\r' && data[i + 3] == (byte)'\n')
+                {
+                    return i;
+                }
+            }
+            return -1;
+        }
+
+        private static string TryParseHostFromHeader(byte[] data, int headerLength)
+        {
+            // Parse lines until "\r\n\r\n". Look for "host:" (case-insensitive)
+            int i = 0;
+            while (i < headerLength)
+            {
+                int lineEnd = FindCrlf(data, i, headerLength);
+                if (lineEnd < 0) break;
+
+                int lineLength = lineEnd - i;
+                if (lineLength == 0)
+                {
+                    // empty line
+                    break;
+                }
+
+                if (StartsWithHostHeader(data, i, lineLength))
+                {
+                    int valueStart = i + 5; // after "host:"
+                    // skip spaces/tabs
+                    while (valueStart < lineEnd && (data[valueStart] == (byte)' ' || data[valueStart] == (byte)'\t'))
+                        valueStart++;
+
+                    int valueEnd = lineEnd;
+                    while (valueEnd > valueStart && (data[valueEnd - 1] == (byte)' ' || data[valueEnd - 1] == (byte)'\t'))
+                        valueEnd--;
+
+                    if (valueEnd <= valueStart) return null;
+                    return Encoding.ASCII.GetString(data, valueStart, valueEnd - valueStart).ToLowerInvariant();
+                }
+
+                i = lineEnd + 2; // skip CRLF
+            }
+
+            return null;
+        }
+
+        private static int FindCrlf(byte[] data, int start, int limit)
+        {
+            for (int i = start; i + 1 < limit; i++)
+            {
+                if (data[i] == (byte)'\r' && data[i + 1] == (byte)'\n')
+                    return i;
+            }
+            return -1;
+        }
+
+        private static bool StartsWithHostHeader(byte[] data, int lineStart, int lineLength)
+        {
+            // "Host:" is 5 chars
+            if (lineLength < 5) return false;
+
+            return (ToLowerAscii(data[lineStart + 0]) == (byte)'h')
+                && (ToLowerAscii(data[lineStart + 1]) == (byte)'o')
+                && (ToLowerAscii(data[lineStart + 2]) == (byte)'s')
+                && (ToLowerAscii(data[lineStart + 3]) == (byte)'t')
+                && (data[lineStart + 4] == (byte)':');
+        }
+
+        private static byte ToLowerAscii(byte b)
+        {
+            if (b >= (byte)'A' && b <= (byte)'Z')
+                return (byte)(b + 32);
+            return b;
         }
         #endregion
 

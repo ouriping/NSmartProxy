@@ -7,6 +7,8 @@ using System.Runtime.InteropServices.ComTypes;
 using System.Text;
 using NSmartProxy.Data;
 using NSmartProxy.Infrastructure;
+using System.Threading;
+using System.Threading.Tasks;
 using Snappy.Sharp;
 
 namespace NSmartProxy
@@ -210,13 +212,13 @@ namespace NSmartProxy
             return true;
         }
 
-        /// <summary>
-        /// 使用snappy算法解压缩
-        /// </summary>
-        /// <param name="compressed"></param>
-        /// <param name="offset"></param>
-        /// <param name="length"></param>
-        /// <returns></returns>
+        // <summary>
+        // 使用snappy算法解压缩
+        // </summary>
+        // <param name = "compressed" ></ param >
+        // < param name="offset"></param>
+        // <param name = "length" ></ param >
+        // < returns ></ returns >
         public static byte[] DecompressInSnappy(byte[] compressed, int offset, int length)
         {
             SnappyDecompressor sd = new SnappyDecompressor();
@@ -232,13 +234,13 @@ namespace NSmartProxy
             }
         }
 
-        /// <summary>
-        /// 使用snappy算法压缩
-        /// </summary>
-        /// <param name="uncompressed"></param>
-        /// <param name="offset"></param>
-        /// <param name="uncompressedLength"></param>
-        /// <returns></returns>
+        // <summary>
+        // 使用snappy算法压缩
+        // </summary>
+        // <param name = "uncompressed" ></ param >
+        // < param name="offset"></param>
+        // <param name = "uncompressedLength" ></ param >
+        // < returns ></ returns >
         public static CompressedBytes CompressInSnappy(byte[] uncompressed, int offset, int uncompressedLength)
         {
             SnappyCompressor sc = new SnappyCompressor();
@@ -249,6 +251,33 @@ namespace NSmartProxy
             int actualLength = sc.Compress(uncompressed, 0, uncompressedLength, outBytes);
             return new CompressedBytes() { ContentBytes = outBytes, Length = actualLength };
         }
+
+
+        //public async static Task CompressInSnappierAsync(Stream inputStream, Stream outputStream, CancellationToken ct)
+        //{
+        //    await _snappyCompressor.Value.CompressAsync(inputStream, outputStream,ct);
+        //}
+
+        //public async static Task DecompressInSnappierAsync(Stream inputStream, Stream outputStream, CancellationToken ct)
+        //{
+        //    await _snappyCompressor.Value.DecompressAsync(inputStream, outputStream, ct);
+        //}
+
+        //public static byte[] CompressInSnappier(byte[] inputBytes)
+        //{
+        //    return _snappyCompressor.Value.Compress(inputBytes);
+        //}
+
+        //public static byte[] DecompressInSnappier(byte[] inputBytes)
+        //{
+        //    return _snappyCompressor.Value.Decompress(inputBytes);
+        //}
+
+        internal static byte[] IntTo4Bytes(int length)
+        {
+            return BitConverter.GetBytes(length);
+        }
+
 
         /// <summary>
         /// 压缩专用对象
