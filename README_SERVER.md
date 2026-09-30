@@ -34,7 +34,7 @@ sudo docker run --name mynspserver -dit -p 7842:7842 -p 7841:7841 -p 12309:12309
 * Linux/MacOS:
 Change directory to the installation directory ,then execute the following command:
 ```
-sudo dotnet NSmartProxy.ServerHost.dll
+dotnet NSmartProxy.ServerHost.dll
 ```
 * Windows:
 Press Windows+R to open the “Run” box. Type “cmd” into the box and then press Ctrl+Shift+Enter to run the command as an administrator.
@@ -44,7 +44,7 @@ dotnet NSmartProxy.ServerHost.dll
 ```
 
 
-In the next step,you can log in to http://youraddress:12309 and enter the web terminal. The default user password is admin/admin.
+Open http://127.0.0.1:12309 on the server itself. The first start prints a one-time admin password. There is no default admin/admin password. Change it before clients can open tunnels. The management port binds to localhost unless WebAPIAddress is changed.
 
 <img src="https://github.com/tmoonlight/100lines/raw/master/6.nspserverrunnning_1.gif" />
 

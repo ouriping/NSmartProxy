@@ -1,5 +1,7 @@
-﻿using System.Diagnostics;
+﻿using System;
+using System.Diagnostics;
 using System.Dynamic;
+using System.Text;
 using Newtonsoft.Json;
 using NSmartProxy.Data;
 using System.IO;
@@ -37,9 +39,93 @@ namespace NSmartProxy.Infrastructure
             using (var fs = new FileStream(path, FileMode.Open))
             {
                 StreamReader sr = new StreamReader(fs);
-                var str = sr.ReadToEnd();
-                return JsonConvert.DeserializeObject<T>(str);
+                var str = StripJsonComments(sr.ReadToEnd());
+                try
+                {
+                    return JsonConvert.DeserializeObject<T>(str);
+                }
+                catch (JsonException ex)
+                {
+                    throw new InvalidOperationException(
+                        "配置文件 " + path + " 无法解析。请修正 JSON，程序不会因此回退到更宽松的默认配置。", ex);
+                }
             }
+        }
+
+        /// <summary>
+        /// 去掉字符串和注释之外的 //、/* */，避免带注释的配置直接导致启动失败。
+        /// </summary>
+        public static string StripJsonComments(string json)
+        {
+            if (string.IsNullOrEmpty(json))
+            {
+                return json;
+            }
+
+            var sb = new StringBuilder(json.Length);
+            bool inString = false;
+            bool escape = false;
+            for (int i = 0; i < json.Length; i++)
+            {
+                char c = json[i];
+                if (inString)
+                {
+                    sb.Append(c);
+                    if (escape)
+                    {
+                        escape = false;
+                    }
+                    else if (c == '\\')
+                    {
+                        escape = true;
+                    }
+                    else if (c == '"')
+                    {
+                        inString = false;
+                    }
+
+                    continue;
+                }
+
+                if (c == '"')
+                {
+                    inString = true;
+                    sb.Append(c);
+                    continue;
+                }
+
+                if (c == '/' && i + 1 < json.Length && json[i + 1] == '/')
+                {
+                    i += 2;
+                    while (i < json.Length && json[i] != '\n')
+                    {
+                        i++;
+                    }
+
+                    if (i < json.Length)
+                    {
+                        sb.Append('\n');
+                    }
+
+                    continue;
+                }
+
+                if (c == '/' && i + 1 < json.Length && json[i + 1] == '*')
+                {
+                    i += 2;
+                    while (i + 1 < json.Length && !(json[i] == '*' && json[i + 1] == '/'))
+                    {
+                        i++;
+                    }
+
+                    i++;
+                    continue;
+                }
+
+                sb.Append(c);
+            }
+
+            return sb.ToString();
         }
 
         /// <summary>

@@ -1,6 +1,7 @@
 ﻿using System;
 using System.IO;
 using NSmartProxy.Data.Models;
+using NSmartProxy.Infrastructure;
 
 namespace NSmartProxy.Client.Authorize
 {
@@ -96,6 +97,7 @@ namespace NSmartProxy.Client.Authorize
         public static void SaveChanges(string cachePath, ClientUserCache clientUserCache)
         {
             File.WriteAllText(cachePath, clientUserCache.ToJsonString());
+            FileModeHelper.RestrictToOwner(cachePath);
         }
 
         /// <summary>

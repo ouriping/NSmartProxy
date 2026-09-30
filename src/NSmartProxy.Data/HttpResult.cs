@@ -20,7 +20,7 @@ namespace NSmartProxy.Data
                 return new HttpResult<T>()
                 {
                     State = 0,
-                    Msg = ex.ToString()
+                    Msg = ex.Message
                 };
             }
 

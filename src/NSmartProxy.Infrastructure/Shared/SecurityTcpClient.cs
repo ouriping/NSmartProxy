@@ -109,7 +109,8 @@ namespace NSmartProxy.Authorize
             //标识位 token长度 值
             int requestLength = 1 + 2 + Token.Length;
             await Client.ConnectAsync(host, port);
-            var stream = Client.GetStream();
+            await ControlTls.HandshakeAsClientAsync(Client, host);
+            var stream = Client.Open();
             //await base.ConnectAsync(host, port);
             await stream.WriteAsync(new byte[] { F9 }, 0, 1);//1标识 长度1
             await stream.WriteAsync(StringUtil.IntTo2Bytes(Token.Length), 0, 2);//2token长度 长度2
@@ -126,7 +127,8 @@ namespace NSmartProxy.Authorize
         /// <returns></returns>
         public async Task<AuthResult> AuthorizeAsync()
         {
-            var stream = Client.GetStream();
+            await ControlTls.HandshakeAsServerAsync(Client);
+            var stream = Client.Open();
             //标识 1
             var protocolBytes = new byte[1];//ArrayPool<byte>.Shared.Rent(1);
             if (await stream.ReadAsync(protocolBytes, 0, protocolBytes.Length) == 0)
@@ -177,25 +179,45 @@ namespace NSmartProxy.Authorize
             {
                 try
                 {
-                    var clamClaims = StringUtil.ConvertStringToTokenClaims(token);
-                    //TODO !!!!!!尚未增加时间戳规则，日后再加。
-                    if (DbOp.Exist(clamClaims.UserKey))
+                    var session = AuthSessionLocator.Find(token);
+                    if (session == null)
+                    {
                         return new AuthResult()
                         {
-                            ErrorMessage = "校验成功！",
-                            ResultState = AuthState.Success
+                            ErrorMessage = "校验失败，会话不存在或已过期",
+                            ResultState = AuthState.Fail
                         };
+                    }
+
+                    if (session.MustChangePassword)
+                    {
+                        return new AuthResult()
+                        {
+                            ErrorMessage = "必须先修改初始密码",
+                            ResultState = AuthState.Fail
+                        };
+                    }
+
+                    if (session.IsAnonymous && !AllowAnonymousUser)
+                    {
+                        return new AuthResult()
+                        {
+                            ErrorMessage = "校验失败，服务端不支持匿名登录",
+                            ResultState = AuthState.Fail
+                        };
+                    }
+
                     return new AuthResult()
                     {
-                        ErrorMessage = "校验失败，无此用户！",
-                        ResultState = AuthState.Fail
+                        ErrorMessage = "校验成功！",
+                        ResultState = AuthState.Success
                     };
                 }
                 catch (Exception ex)
                 {
                     return new AuthResult()
                     {
-                        ErrorMessage = "校验错误！" + ex.ToString(),
+                        ErrorMessage = "校验错误！" + ex.Message,
                         ResultState = AuthState.Error
                     };
                 }

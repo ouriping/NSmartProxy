@@ -45,7 +45,12 @@ namespace NSmartProxy.ClientRouter.Dispatchers
         public async Task<HttpResult<LoginFormClientResult>> LoginFromClient(string username, string userpwd)
         {
             string url = $"http://{BaseUrl}/LoginFromClient";
-            var httpmsg = await Client.GetAsync($"{url}?username={username}&userpwd={userpwd}").ConfigureAwait(false);
+            var content = new FormUrlEncodedContent(new Dictionary<string, string>
+            {
+                { "username", username ?? "" },
+                { "userpwd", userpwd ?? "" }
+            });
+            var httpmsg = await Client.PostAsync(url, content).ConfigureAwait(false);
             var httpstr = await httpmsg.Content.ReadAsStringAsync().ConfigureAwait(false);
             return JsonConvert.DeserializeObject<HttpResult<LoginFormClientResult>>(httpstr);
         }
@@ -53,7 +58,12 @@ namespace NSmartProxy.ClientRouter.Dispatchers
         public async Task<HttpResult<LoginFormClientResult>> Login(string userid, string userpwd)
         {
             string url = $"http://{BaseUrl}/LoginFromClientById";
-            var httpmsg = await Client.GetAsync($"{url}?username={userid}&userpwd={userpwd}").ConfigureAwait(false);
+            var content = new FormUrlEncodedContent(new Dictionary<string, string>
+            {
+                { "username", userid ?? "" },
+                { "userpwd", userpwd ?? "" }
+            });
+            var httpmsg = await Client.PostAsync(url, content).ConfigureAwait(false);
             var httpstr = await httpmsg.Content.ReadAsStringAsync().ConfigureAwait(false);
             return JsonConvert.DeserializeObject<HttpResult<LoginFormClientResult>>(httpstr);
         }
@@ -61,12 +71,26 @@ namespace NSmartProxy.ClientRouter.Dispatchers
         //TODO 增加一个校验用户token是否合法的方法
         //public 
         //GetServerPorts
-        public async Task<HttpResult<ServerPortsDTO>> GetServerPorts()
+        public async Task<HttpResult<ServerPortsDTO>> GetServerPorts(string token = null)
         {
             string url = $"http://{BaseUrl}/GetServerPorts";
-            var httpmsg = await Client.GetAsync(url).ConfigureAwait(false);
-            var httpstr = await httpmsg.Content.ReadAsStringAsync().ConfigureAwait(false);
-            return JsonConvert.DeserializeObject<HttpResult<ServerPortsDTO>>(httpstr);
+            var handler = new HttpClientHandler
+            {
+                UseCookies = true,
+                CookieContainer = new CookieContainer()
+            };
+            if (!string.IsNullOrEmpty(token))
+            {
+                var host = BaseUrl.Substring(0, BaseUrl.IndexOf(':'));
+                handler.CookieContainer.Add(new Cookie("NSPTK", token, "/", host));
+            }
+
+            using (var httpClient = new HttpClient(handler))
+            {
+                var httpmsg = await httpClient.GetAsync(url).ConfigureAwait(false);
+                var httpstr = await httpmsg.Content.ReadAsStringAsync().ConfigureAwait(false);
+                return JsonConvert.DeserializeObject<HttpResult<ServerPortsDTO>>(httpstr);
+            }
         }
 
         /// <summary>

@@ -15,7 +15,7 @@
 * 无需安装运行时，直接拉取镜像即可运行，运行镜像时需要4组端口：配置端口，反向连接端口，API服务端口，以及使用端口 ：
 ```
 sudo docker pull tmoonlight/nspserver
-sudo docker run --name mynspserver -dit -p 7842:7842 -p 7841:7841 -p 12309:12309 -p 20000-20050 tmoonlight/nspserver
+sudo docker run --name mynspserver -dit -p 7842:7842 -p 7841:7841 -p 127.0.0.1:12309:12309 tmoonlight/nspserver
 ```
 
 ## 使用方法
@@ -35,7 +35,7 @@ sudo docker run --name mynspserver -dit -p 7842:7842 -p 7841:7841 -p 12309:12309
 第二步 执行以下命令
 * Linux/MacOS：
 ```
-sudo dotnet NSmartProxy.ServerHost.dll
+dotnet NSmartProxy.ServerHost.dll
 ```
 * Windows：
 点击 Win+R 打开运行窗口. 输入 “cmd” 按下 Ctrl+Shift+Enter打开管理员身份运行的命令行窗口。 cd到安装目录，运行如下指令：
@@ -44,7 +44,7 @@ sudo dotnet NSmartProxy.ServerHost.dll
 dotnet NSmartProxy.ServerHost.dll
 ```
 
-第三步 登陆http://ip:12309 进入web端，出厂用户密码为admin/admin
+第三步 在服务器本机打开 http://127.0.0.1:12309 。首次启动会在控制台打印一次性管理员密码，没有固定的 admin/admin。登录后必须马上修改密码。管理端口默认只绑定本机。
 
 <img src="https://github.com/tmoonlight/100lines/raw/master/6.nspserverrunnning_1.gif" />
 

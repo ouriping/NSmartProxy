@@ -1,6 +1,10 @@
 # NSmartProxy 安装与部署安全审计
 
-本文档文件名为 `SECURITY_FIX.md`，放在仓库根目录。只记录本次在 `ouriping/NSmartProxy`（fork 自 `tmoonlight/NSmartProxy`，默认分支 `master`）源码中核对过的安装、部署和出厂配置问题，并给出修复建议。**本次没有修改任何源代码。**
+本文档文件名为 `SECURITY_FIX.md`，放在仓库根目录。记录在 `ouriping/NSmartProxy`（fork 自 `tmoonlight/NSmartProxy`，默认分支 `master`）源码中核对过的安装、部署和出厂配置问题。下文「问题描述」保留审计时的代码位置；对应修复已经写入后续提交，主要包括：随机初始管理员口令、默认关闭匿名登录并校验管理员角色、管理端口默认绑定本机且登录改为 POST + HttpOnly Cookie、会话改为服务端保存的随机令牌、控制通道与反向隧道启用 TLS 并校验指纹、清空默认端口映射、收紧 FTP/Docker/Windows 服务权限、PBKDF2 口令、日志路径校验，以及把服务端和客户端目标框架升到 `net8.0`。
+
+管理端口在 Linux 的 `HttpListener` 上不能可靠启用 HTTPS，因此默认只监听 `127.0.0.1`。需要从公网管理时，应放在 TLS 反向代理后面，而不是把 `WebAPIAddress` 改成 `0.0.0.0` 后继续使用明文 HTTP。
+
+实现时把服务端、客户端和 FTP 插件的 `log4net` 升到 `3.3.2`。2.0.17 已修复 CVE-2018-1285，但 GHSA-4f7c-pmjv-c25w（CVE-2026-40021）覆盖 3.3.0 之前的全部版本。登录、改密、客户端登录以及新增/修改用户口令的接口只接受 POST 表单体，不再从查询字符串读取口令。WinForms / WinService 仍通过 `packages.config` 引用 `log4net` 2.0.17，需要在 Windows 上还原包后再升到 3.3.2。
 
 审计对象是安装脚本、Windows 服务安装、Dockerfile、Azure Pipelines、默认 `appsettings.json`、服务端 Web 管理接口、客户端登录缓存、控制通道与隧道传输，以及仓库里声明的依赖版本。仓库中没有 `docker-compose` 文件，也没有 Linux systemd unit。
 

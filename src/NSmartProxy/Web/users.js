@@ -40,13 +40,11 @@ function addUser_submit() {
     validator.validate();
     //alert(validator.isValid());
     if (validator.isValid()) {
-        $.get(basepath +
-            "AddUserV2?username=" +
-            $("#inputUserName").val() +
-            "&userpwd=" +
-            $("#inputPassword").val() +
-            "&isadmin=" +
-            ($("#cbxIsAdmin").prop("checked") ? 1 : 0),
+        $.post(basepath + "AddUserV2", {
+            username: $("#inputUserName").val(),
+            userpwd: $("#inputPassword").val(),
+            isadmin: ($("#cbxIsAdmin").prop("checked") ? 1 : 0)
+        },
             function (res) {
                 if (res.State == 0) {
                     alert("保存失败：" + res.Msg);
@@ -64,14 +62,12 @@ function addUser_submit() {
 
 function editUser_submit(oldUserName) {
     var newUserName = $("#inputUserName").val();
-    $.get(basepath +
-        "UpdateUser?oldusername=" + oldUserName +
-        "&newusername=" +
-        newUserName +
-        "&userpwd=" +
-        $("#inputPassword").val() +
-        "&isadmin=" +
-        ($("#cbxIsAdmin").prop("checked") ? 1 : 0),
+    $.post(basepath + "UpdateUser", {
+        oldusername: oldUserName,
+        newusername: newUserName,
+        userpwd: $("#inputPassword").val(),
+        isadmin: ($("#cbxIsAdmin").prop("checked") ? 1 : 0)
+    },
         function (res) {
             if (res.State == 0) {
                 alert("编辑失败：" + res.Msg);
@@ -146,8 +142,8 @@ function selectUsers() {
                 "<td>" +
                 dropDownButtonHtml(user, i) +
                 "</td>" +
-                "<td class='td_userid'>" + user.userId + "</td>" +
-                "<td class='td_username'>" + user.userName + "</td>" +
+                "<td class='td_userid'>" + escapeHtml(user.userId) + "</td>" +
+                "<td class='td_username'>" + escapeHtml(user.userName) + "</td>" +
                 "<td>" + user.regTime + "</td>" +
                 "<td>";
             if (user.isAdmin == "1") htmlStr += htmlIsAdmin;
@@ -155,7 +151,7 @@ function selectUsers() {
             if (user.isBanned == "true") htmlStr += htmlIsBanned;
 
             htmlStr += "</td>" +
-                "<td class='td-ports'>" + user.boundPorts + "</td>" +
+                "<td class='td-ports'>" + escapeHtml(user.boundPorts) + "</td>" +
 
                 "</tr>";
             //alert(user.isBanned == "true");
@@ -172,18 +168,18 @@ function dropDownButtonHtml(user, userIndex) {
     var html = "<div class=\"btn-group\" '>" +
         "<button class=\"btn btn-primary btn-sm dropdown-toggle\" type=\"button\" data-toggle=\"dropdown\" aria-haspopup=\"true\" aria-expanded=\"false\">" +
         "操作</button>\r\n      <div class=\"dropdown-menu\" x-placement=\"bottom-start\" style=\"position: absolute; will-change: transform; top: 0px; left: 0px; transform: translate3d(0px, 31px, 0px);\">" +
-        "<a class=\"dropdown-item\" href=\"javascript:changeBind('" + user.boundPorts + "','" + user.userId + "')\">端口绑定</a>";
+        "<a class=\"dropdown-item\" href=\"javascript:changeBind('" + escapeJsString(user.boundPorts) + "','" + escapeJsString(user.userId) + "')\">端口绑定</a>";
     if (user.isBanned == "true") {
-        html += "<a class=\"dropdown-item\" href=\"javascript:unBanOneUser('" + user.userId + "')\">恢复断开</a>";
+        html += "<a class=\"dropdown-item\" href=\"javascript:unBanOneUser('" + escapeJsString(user.userId) + "')\">恢复断开</a>";
     } else {
-        html += "<a class=\"dropdown-item\" href=\"javascript:banOneUser('" + user.userId + "')\">断开用户</a>";
+        html += "<a class=\"dropdown-item\" href=\"javascript:banOneUser('" + escapeJsString(user.userId) + "')\">断开用户</a>";
     }
     //user.username user.
     html += "<div class=\"dropdown-divider\"></div>" +
-        "<a class=\"dropdown-item\" href=\"javascript:editUser('" + user.userName + "','" + user.isAdmin + "')\">编辑用户</a>" +
-        "<a class=\"dropdown-item\" href=\"javascript:delOneUser('" + userIndex + "','" + user.userName + "')\">删除用户</a>";
+        "<a class=\"dropdown-item\" href=\"javascript:editUser('" + escapeJsString(user.userName) + "','" + escapeJsString(user.isAdmin) + "')\">编辑用户</a>" +
+        "<a class=\"dropdown-item\" href=\"javascript:delOneUser('" + escapeJsString(userIndex) + "','" + escapeJsString(user.userName) + "')\">删除用户</a>";
     html += "<div class=\"dropdown-divider\"></div>" +
-        "<a class=\"dropdown-item\" href=\"javascript:expandConfigPanel('" + user.userName + "')\">修改配置</a>" +
+        "<a class=\"dropdown-item\" href=\"javascript:expandConfigPanel('" + escapeJsString(user.userName) + "')\">修改配置</a>" +
         "</div></div>";
     return html;
 }

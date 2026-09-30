@@ -189,7 +189,7 @@ function getLogFileTable(lines) {
             var data = res.Data;
             var logText = "";
             for (i in data) {
-                logText += " <tr><td>" + i + "</td> <td>" + data[i] + "</td></tr> ";
+                logText += " <tr><td>" + escapeHtml(i) + "</td> <td>" + escapeHtml(data[i]) + "</td></tr> ";
             }
             $("#tbodyLogs").html(logText);
         }

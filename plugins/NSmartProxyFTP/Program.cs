@@ -52,12 +52,18 @@ namespace NSmartProxyFTP
             if (!loggerRepository.Configured) throw new Exception("log config failed.");
             Console.ForegroundColor = ConsoleColor.Yellow;
 
-            //用户登录
-            if (args.Length == 4)
+            if (args != null && Array.Exists(args, a => a == "-p" || a == "-pwd" || a == "--password" || a == "-u"))
+            {
+                Console.Error.WriteLine("不要在命令行传入用户名或密码。请设置环境变量 NSP_USERNAME 和 NSP_PASSWORD。");
+            }
+
+            var envUser = Environment.GetEnvironmentVariable("NSP_USERNAME");
+            var envPwd = Environment.GetEnvironmentVariable("NSP_PASSWORD");
+            if (!string.IsNullOrEmpty(envUser))
             {
                 _currentLoginInfo = new LoginInfo();
-                _currentLoginInfo.UserName = args[1];
-                _currentLoginInfo.UserPwd = args[3];
+                _currentLoginInfo.UserName = envUser;
+                _currentLoginInfo.UserPwd = envPwd ?? "";
             }
 
             Logger.Info($"*** {NSPVersion.NSmartProxyServerName} ***");
@@ -89,7 +95,20 @@ namespace NSmartProxyFTP
             var users = new List<UserElement>();
             foreach (var u in Configuration.GetSection("FtpUsers").GetChildren())
             {
-                users.Add(new UserElement() { username = u["username"], password = u["password"], rootDir = u["rootDir"] });
+                var username = u["username"];
+                var password = u["password"];
+                var rootDir = u["rootDir"] ?? "";
+                if (string.IsNullOrEmpty(password)
+                    || password == "654123"
+                    || password == "change-me"
+                    || username == "change-me"
+                    || rootDir.Equals(@"d:\", StringComparison.OrdinalIgnoreCase)
+                    || (rootDir.Length <= 3 && rootDir.EndsWith(":\\", StringComparison.Ordinal)))
+                {
+                    throw new Exception("FTP 账号仍是占位口令，或根目录是盘符根。请先修改 appsettings.json。");
+                }
+
+                users.Add(new UserElement() { username = username, password = password, rootDir = rootDir });
             }
             var server = new FtpServer.FtpServer(int.Parse(Configuration.GetSection("FtpPort").Value), int.Parse(Configuration.GetSection("PasvPort").Value), int.Parse(Configuration.GetSection("FtpMaxConnect").Value), users);
             server.Start(ip, clientModel.AppList[1].Port);
@@ -136,6 +155,17 @@ namespace NSmartProxyFTP
             NSPClientConfig config = new NSPClientConfig();
             config.ProviderAddress = Configuration.GetSection("ProviderAddress").Value;
             config.ProviderWebPort = int.Parse(Configuration.GetSection("ProviderWebPort").Value);
+            config.ProviderCertThumbprint = Configuration.GetSection("ProviderCertThumbprint").Value ?? "";
+            var tls = Configuration.GetSection("ControlTlsEnabled").Value;
+            if (!string.IsNullOrEmpty(tls))
+            {
+                config.ControlTlsEnabled = bool.Parse(tls);
+            }
+            var allowDangerous = Configuration.GetSection("AllowDangerousPorts").Value;
+            if (!string.IsNullOrEmpty(allowDangerous))
+            {
+                config.AllowDangerousPorts = bool.Parse(allowDangerous);
+            }
             var configClients = Configuration.GetSection("Clients").GetChildren();
             foreach (var cli in configClients)
             {

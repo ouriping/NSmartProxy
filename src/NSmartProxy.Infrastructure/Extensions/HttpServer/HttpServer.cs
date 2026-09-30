@@ -54,7 +54,7 @@ namespace NSmartProxy.Infrastructure.Extension
         /// <param name="ctsHttp"></param>
         /// <param name="WebManagementPort"></param>
         /// <returns></returns>
-        public async Task StartHttpService(CancellationTokenSource ctsHttp, int WebManagementPort)
+        public async Task StartHttpService(CancellationTokenSource ctsHttp, int WebManagementPort, string webApiAddress)
         {
             try
             {
@@ -73,7 +73,18 @@ namespace NSmartProxy.Infrastructure.Extension
                 }
                 Logger.Debug($"{files.Length} files cached.");
 
-                listener.Prefixes.Add($"http://+:{WebManagementPort}/");
+                var host = string.IsNullOrWhiteSpace(webApiAddress) ? "127.0.0.1" : webApiAddress.Trim();
+                string prefix;
+                if (host == "0.0.0.0" || host == "*" || host == "+")
+                {
+                    prefix = $"http://+:{WebManagementPort}/";
+                }
+                else
+                {
+                    prefix = $"http://{host}:{WebManagementPort}/";
+                }
+
+                listener.Prefixes.Add(prefix);
                 Logger.Debug("Listening HTTP request on port " + WebManagementPort.ToString() + "...");
                 await AcceptHttpRequest(listener, ctsHttp);
             }
@@ -138,7 +149,15 @@ namespace NSmartProxy.Infrastructure.Extension
                     }
                     //mime类型
                     ProcessMIME(response, unit.Substring(idx3));
-                    //TODO 权限控制（只是控制html权限而已）
+                    if (!IsPublicWebFile(unit))
+                    {
+                        if (CurrentSession(request) == null)
+                        {
+                            response.StatusCode = 302;
+                            response.Headers["Location"] = "/login.html";
+                            return;
+                        }
+                    }
 
                     //读文件优先去缓存读
                     if (FilesCache.TryGetValue(unit.TrimStart('/'), out MemoryStream memoryStream))
@@ -161,17 +180,7 @@ namespace NSmartProxy.Infrastructure.Extension
 
                     //调用接口 用分布类隔离并且用API特性限定安全
                     object jsonObj;
-                    //List<string> qsStrList;
-                    int qsCount = request.QueryString.Count;
                     object[] parameters = null;
-                    if (qsCount > 0)
-                    {
-                        parameters = new object[request.QueryString.Count];
-                        for (int i = 0; i < request.QueryString.Count; i++)
-                        {
-                            parameters[i] = request.QueryString[i];
-                        }
-                    }
 
                     //反射调用API方法
                     MethodInfo method = null;
@@ -184,20 +193,46 @@ namespace NSmartProxy.Infrastructure.Extension
                             throw new Exception($"无效的方法名{unit}");
                         }
 
-                        //debug编译时不校验，方便调试
-#if !DEBUG
-                        if (method.GetCustomAttribute<SecureAttribute>() != null)
+                        var takesPassword = false;
+                        foreach (var parameter in method.GetParameters())
                         {
-                            if (request.Cookies["NSPTK"] == null)
-                                throw new Exception("用户未登录。");
-                            //TODO cookie，根据不同的用户角色分配权限。
-                            var UserClaims = StringUtil.ConvertStringToTokenClaims(request.Cookies["NSPTK"].Value);
-                            if (string.IsNullOrEmpty(UserClaims.UserKey))
+                            if (parameter.Name != null
+                                && parameter.Name.IndexOf("pwd", StringComparison.OrdinalIgnoreCase) >= 0)
                             {
-                                throw new Exception("登录信息异常。");
+                                takesPassword = true;
+                                break;
                             }
                         }
-#endif
+
+                        if (takesPassword
+                            && !string.Equals(request.HttpMethod, "POST", StringComparison.OrdinalIgnoreCase))
+                        {
+                            throw new Exception("包含口令的接口只接受 POST。");
+                        }
+
+                        if (method.GetCustomAttribute<FileUploadAttribute>() == null)
+                        {
+                            parameters = BindParameters(method, request, allowQuery: !takesPassword);
+                        }
+
+                        var session = CurrentSession(request);
+                        if (method.GetCustomAttribute<SecureAttribute>() != null)
+                        {
+                            if (session == null)
+                            {
+                                throw new Exception("用户未登录。");
+                            }
+
+                            if (session.IsAnonymous)
+                            {
+                                throw new Exception("匿名用户不能访问管理接口。");
+                            }
+
+                            if (method.GetCustomAttribute<AdminOnlyAttribute>() != null && !session.IsAdmin)
+                            {
+                                throw new Exception("需要管理员权限。");
+                            }
+                        }
 
                         if (method.GetCustomAttribute<APIAttribute>() != null)
                         {
@@ -270,7 +305,7 @@ namespace NSmartProxy.Infrastructure.Extension
                     {
                         if ((ex is TargetInvocationException) && ex.InnerException != null) ex = ex.InnerException;
                         Logger.Error(ex.Message, ex);
-                        jsonObj = new Exception(ex.Message + "---" + ex.StackTrace);
+                        jsonObj = new Exception(ex.Message);
                         response.ContentType = "application/json";
                         await response.OutputStream.WriteAsync(HtmlUtil.GetContent(jsonObj.Wrap().ToJsonString()));
                     }
@@ -290,6 +325,125 @@ namespace NSmartProxy.Infrastructure.Extension
             {
                 response.OutputStream.Close();
             }
+        }
+
+        private static readonly HashSet<string> PublicWebFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "/login.html",
+            "/signin.css",
+            "/bootstrap.min.css",
+            "/jquery-slim.min.js",
+            "/main.js",
+            "/favicon.ico"
+        };
+
+        private static bool IsPublicWebFile(string unit)
+        {
+            if (string.IsNullOrEmpty(unit))
+            {
+                return false;
+            }
+
+            var path = unit.StartsWith("/") ? unit : "/" + unit;
+            return PublicWebFiles.Contains(path);
+        }
+
+        private AuthSession CurrentSession(HttpListenerRequest request)
+        {
+            var store = ServerContext as IAuthSessionStore;
+            if (store == null || request.Cookies[Global.TOKEN_COOKIE_NAME] == null)
+            {
+                return null;
+            }
+
+            return store.GetSession(request.Cookies[Global.TOKEN_COOKIE_NAME].Value);
+        }
+
+        private object[] BindParameters(MethodInfo method, HttpListenerRequest request, bool skipBody = false, bool allowQuery = true)
+        {
+            var form = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            if (!skipBody
+                && string.Equals(request.HttpMethod, "POST", StringComparison.OrdinalIgnoreCase)
+                && request.HasEntityBody
+                && request.ContentType != null
+                && request.ContentType.IndexOf("application/x-www-form-urlencoded", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                using (var reader = new StreamReader(request.InputStream, request.ContentEncoding ?? Encoding.UTF8))
+                {
+                    foreach (var pair in ParseForm(reader.ReadToEnd()))
+                    {
+                        form[pair.Key] = pair.Value;
+                    }
+                }
+            }
+
+            var methodParams = method.GetParameters();
+            var parameters = new object[methodParams.Length];
+            for (int i = 0; i < methodParams.Length; i++)
+            {
+                var name = methodParams[i].Name;
+                string value = null;
+                if (name != null && form.TryGetValue(name, out value))
+                {
+                    parameters[i] = value;
+                    continue;
+                }
+
+                if (allowQuery)
+                {
+                    var fromQuery = request.QueryString[name];
+                    if (fromQuery != null)
+                    {
+                        parameters[i] = fromQuery;
+                        continue;
+                    }
+
+                    if (i < request.QueryString.Count)
+                    {
+                        parameters[i] = request.QueryString[i];
+                        continue;
+                    }
+                }
+
+                parameters[i] = methodParams[i].HasDefaultValue ? methodParams[i].DefaultValue : null;
+            }
+
+            return parameters;
+        }
+
+        private static Dictionary<string, string> ParseForm(string body)
+        {
+            var dict = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            if (string.IsNullOrEmpty(body))
+            {
+                return dict;
+            }
+
+            foreach (var pair in body.Split('&'))
+            {
+                if (pair.Length == 0)
+                {
+                    continue;
+                }
+
+                var idx = pair.IndexOf('=');
+                string key;
+                string val;
+                if (idx < 0)
+                {
+                    key = Uri.UnescapeDataString(pair.Replace('+', ' '));
+                    val = "";
+                }
+                else
+                {
+                    key = Uri.UnescapeDataString(pair.Substring(0, idx).Replace('+', ' '));
+                    val = Uri.UnescapeDataString(pair.Substring(idx + 1).Replace('+', ' '));
+                }
+
+                dict[key] = val;
+            }
+
+            return dict;
         }
 
         private void ProcessMIME(HttpListenerResponse response, string suffix)

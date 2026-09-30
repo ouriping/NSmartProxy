@@ -78,7 +78,7 @@ namespace NSmartProxy.Client
                     //代表nsmartproxy.clientrouter.dll所在的路径
                     string assemblyFilePath = Assembly.GetExecutingAssembly().Location;
                     string assemblyDirPath = Path.GetDirectoryName(assemblyFilePath);
-                    NspClientCachePath = assemblyDirPath + "\\" + NSMART_CLIENT_CACHE_FILE;
+                    NspClientCachePath = Path.Combine(assemblyDirPath, NSMART_CLIENT_CACHE_FILE);
                     //NspClientCachePath = System.Environment.CurrentDirectory + "\\" + NSMART_CLIENT_CACHE_FILE;
 
                 }
@@ -124,6 +124,9 @@ namespace NSmartProxy.Client
         /// <returns></returns>
         public async Task Start(bool AlwaysReconnect = false, Action<ClientModel> complete = null)
         {
+            ControlTls.ClientEnabled = ClientConfig != null && ClientConfig.ControlTlsEnabled;
+            ControlTls.ExpectedThumbprint = ClientConfig?.ProviderCertThumbprint ?? "";
+            EnsureSafePortMappings();
             if (AlwaysReconnect) IsStarted = true;
             var oneLiveToken = ONE_LIVE_TOKEN_SRC.Token;
             //登录功能
@@ -227,7 +230,7 @@ namespace NSmartProxy.Client
                 //0 获取服务器端口配置
                 try
                 {
-                    await InitServerPorts();
+                    await InitServerPorts(arrangedToken);
                 }
                 catch (Exception ex)//出错 重连
                 {
@@ -323,9 +326,27 @@ namespace NSmartProxy.Client
         /// 初始化服务器端口配置，并返回配置的dto
         /// </summary>
         /// <returns></returns>
-        private async Task<ServerPortsDTO> InitServerPorts()
+        private void EnsureSafePortMappings()
         {
-            var result = await ClientDispatcher.GetServerPorts();
+            if (ClientConfig == null || ClientConfig.AllowDangerousPorts || ClientConfig.Clients == null)
+            {
+                return;
+            }
+
+            int[] dangerous = { 21, 22, 23, 445, 3389, 5900, 5901 };
+            var hit = ClientConfig.Clients.Where(c => dangerous.Contains(c.TargetServicePort))
+                .Select(c => c.TargetServicePort.ToString())
+                .ToList();
+            if (hit.Count > 0)
+            {
+                throw new InvalidOperationException(
+                    "配置包含高风险内网端口 " + string.Join(",", hit) + "。确认需要映射时，请将 AllowDangerousPorts 设为 true。");
+            }
+        }
+
+        private async Task<ServerPortsDTO> InitServerPorts(string token)
+        {
+            var result = await ClientDispatcher.GetServerPorts(token);
             if (result.State == 1)
             {
                 ClientConfig.ReversePort = result.Data.ReversePort;
@@ -414,7 +435,7 @@ namespace NSmartProxy.Client
             try
             {
                 byte[] buffer = new byte[10];
-                NetworkStream providerClientStream = providerClient.GetStream();
+                Stream providerClientStream = providerClient.Open();
                 //接收首条消息，首条消息中返回的是appid和客户端
                 //消费端长连接，需要在server端保活
                 ControlMethod controlMethod;
@@ -487,7 +508,7 @@ namespace NSmartProxy.Client
 
             //TODO 4 这里有性能隐患，考虑后期改成哈希表
             ClientApp item = ClientConfig.Clients.First((obj) => obj.AppId == appId);
-            var networkStream = providerClient.GetStream();
+            var networkStream = providerClient.Open();
             //byte[] bytesLength = new byte[2];
             // await networkStream.ReadAsync(bytesLength, 0, 2);
 
@@ -537,7 +558,7 @@ namespace NSmartProxy.Client
 
         private SemaphoreSlim semaphoreSlim = new SemaphoreSlim(1, 1);
         //private object udpSendLocker = new object();
-        private async Task ReceiveUdpRequest(byte[] ipByte, byte[] portByte, UdpClient reciverUdpClient, NetworkStream toStatisStream)
+        private async Task ReceiveUdpRequest(byte[] ipByte, byte[] portByte, UdpClient reciverUdpClient, Stream toStatisStream)
         {
             //stream存在共同写入的情况
             //throw new NotImplementedException();
@@ -592,8 +613,8 @@ namespace NSmartProxy.Client
             string epString = item.IP.ToString() + ":" + item.TargetServicePort.ToString();
             Router.Logger.Debug("已连接目标服务:" + epString);
 
-            //NetworkStream targetServerStream = toTargetServer.GetStream();
-            //NetworkStream providerClientStream = providerClient.GetStream();
+            //Stream targetServerStream = toTargetServer.Open();
+            //Stream providerClientStream = providerClient.Open();
             _ = TcpTransferAsync(providerClient, toTargetServer, epString, item, tranferTokenId);
         }
 
@@ -620,8 +641,8 @@ namespace NSmartProxy.Client
 
         private async Task TcpTransferAsync(TcpClient providerClient, TcpClient toTargetServer, string epString, ClientApp item, int tranferTokenId)
         {
-            NetworkStream targetServerStream = toTargetServer.GetStream();
-            NetworkStream providerStream = providerClient.GetStream();
+            Stream targetServerStream = toTargetServer.Open();
+            Stream providerStream = providerClient.Open();
             try
             {
                 string localEndPoint = providerClient.Client.LocalEndPoint.ToString();
@@ -646,7 +667,7 @@ namespace NSmartProxy.Client
         }
 
 
-        private async Task StreamTransfer(CancellationToken ct, NetworkStream fromStream, NetworkStream toStream,
+        private async Task StreamTransfer(CancellationToken ct, Stream fromStream, Stream toStream,
             string epString, ClientApp item)
         {
             byte[] buffer = new byte[Global.ClientTunnelBufferSize];
@@ -680,7 +701,7 @@ namespace NSmartProxy.Client
         }
 
 
-        private async Task ToStaticTransfer(CancellationToken ct, NetworkStream fromStream, NetworkStream toStream,
+        private async Task ToStaticTransfer(CancellationToken ct, Stream fromStream, Stream toStream,
             string epString, ClientApp item)
         {
             byte[] buffer = new byte[Global.ClientTunnelBufferSize];

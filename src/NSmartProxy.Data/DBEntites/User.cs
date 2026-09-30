@@ -13,5 +13,6 @@ namespace NSmartProxy.Data.DBEntities
         public string regTime;
         public string isAdmin;
         public string isAnonymous; //1表示是 0表示否，匿名用户
+        public string mustChangePassword; //1 表示必须先修改密码，修改前拒绝建立隧道
     }
 }

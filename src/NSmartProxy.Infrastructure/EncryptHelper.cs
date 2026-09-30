@@ -573,5 +573,152 @@ namespace NSmartProxy.Infrastructure
             return Convert.ToBase64String(Result);  //返回长度为44字节的字符串
         }
 
+        /// <summary>
+        /// PBKDF2-HMAC-SHA256。格式：pbkdf2$迭代次数$盐$哈希（均为 Base64）。
+        /// </summary>
+        public static string HashPassword(string password)
+        {
+            var salt = new byte[16];
+            using (var rng = RandomNumberGenerator.Create())
+            {
+                rng.GetBytes(salt);
+            }
+
+            const int iterations = 100000;
+            var hash = Pbkdf2Sha256(Encoding.UTF8.GetBytes(password ?? ""), salt, iterations, 32);
+            return "pbkdf2$" + iterations + "$" + Convert.ToBase64String(salt) + "$" + Convert.ToBase64String(hash);
+        }
+
+        /// <summary>
+        /// 校验口令。旧数据是无盐 SHA-256 时 needsUpgrade 为 true，调用方应在登录成功后重新哈希。
+        /// </summary>
+        public static bool VerifyPassword(string password, string stored, out bool needsUpgrade)
+        {
+            needsUpgrade = false;
+            if (string.IsNullOrEmpty(stored))
+            {
+                return false;
+            }
+
+            if (stored.StartsWith("pbkdf2$", StringComparison.Ordinal))
+            {
+                var parts = stored.Split('$');
+                if (parts.Length != 4)
+                {
+                    return false;
+                }
+
+                int iterations;
+                if (!int.TryParse(parts[1], out iterations) || iterations < 1)
+                {
+                    return false;
+                }
+
+                byte[] salt;
+                byte[] expected;
+                try
+                {
+                    salt = Convert.FromBase64String(parts[2]);
+                    expected = Convert.FromBase64String(parts[3]);
+                }
+                catch (FormatException)
+                {
+                    return false;
+                }
+
+                var actual = Pbkdf2Sha256(Encoding.UTF8.GetBytes(password ?? ""), salt, iterations, expected.Length);
+                return FixedTimeEquals(actual, expected);
+            }
+
+            needsUpgrade = true;
+            var legacy = SHA256(password ?? "");
+            return FixedTimeEquals(Encoding.UTF8.GetBytes(legacy), Encoding.UTF8.GetBytes(stored));
+        }
+
+        public static string CreateSessionToken()
+        {
+            var bytes = new byte[32];
+            using (var rng = RandomNumberGenerator.Create())
+            {
+                rng.GetBytes(bytes);
+            }
+
+            return Convert.ToBase64String(bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_');
+        }
+
+        public static string CreatePassword(int length)
+        {
+            const string alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789";
+            var bytes = new byte[length];
+            using (var rng = RandomNumberGenerator.Create())
+            {
+                rng.GetBytes(bytes);
+            }
+
+            var chars = new char[length];
+            for (int i = 0; i < length; i++)
+            {
+                chars[i] = alphabet[bytes[i] % alphabet.Length];
+            }
+
+            return new string(chars);
+        }
+
+        private static bool FixedTimeEquals(byte[] a, byte[] b)
+        {
+            if (a == null || b == null || a.Length != b.Length)
+            {
+                return false;
+            }
+
+            int diff = 0;
+            for (int i = 0; i < a.Length; i++)
+            {
+                diff |= a[i] ^ b[i];
+            }
+
+            return diff == 0;
+        }
+
+        private static byte[] Pbkdf2Sha256(byte[] password, byte[] salt, int iterations, int outputBytes)
+        {
+            using (var hmac = new HMACSHA256(password))
+            {
+                int hashLength = hmac.HashSize / 8;
+                int blockCount = (int)Math.Ceiling(outputBytes / (double)hashLength);
+                var output = new byte[blockCount * hashLength];
+                for (int block = 1; block <= blockCount; block++)
+                {
+                    var blockBytes = new byte[salt.Length + 4];
+                    Buffer.BlockCopy(salt, 0, blockBytes, 0, salt.Length);
+                    blockBytes[salt.Length] = (byte)(block >> 24);
+                    blockBytes[salt.Length + 1] = (byte)(block >> 16);
+                    blockBytes[salt.Length + 2] = (byte)(block >> 8);
+                    blockBytes[salt.Length + 3] = (byte)block;
+                    var u = hmac.ComputeHash(blockBytes);
+                    var t = (byte[])u.Clone();
+                    for (int i = 1; i < iterations; i++)
+                    {
+                        u = hmac.ComputeHash(u);
+                        for (int j = 0; j < t.Length; j++)
+                        {
+                            t[j] ^= u[j];
+                        }
+                    }
+
+                    Buffer.BlockCopy(t, 0, output, (block - 1) * hashLength, hashLength);
+                }
+
+                if (output.Length == outputBytes)
+                {
+                    return output;
+                }
+
+                var result = new byte[outputBytes];
+                Buffer.BlockCopy(output, 0, result, 0, outputBytes);
+                return result;
+            }
+        }
+
     }
 }

@@ -121,7 +121,8 @@ namespace NSmartProxy.Client
             }
             if (!isConnected) { Router.Logger.Debug("重试次数达到限制。"); throw new Exception("重试次数达到限制。"); }
 
-            var configStream = configClient.GetStream();
+            await ControlTls.HandshakeAsClientAsync(configClient, config.ProviderAddress);
+            var configStream = configClient.Open();
 
             //请求0 协议名
             byte requestByte0;
@@ -261,7 +262,7 @@ namespace NSmartProxy.Client
 
                 //2.发送clientid和appid信息，向服务端申请连接
                 //连接到位后增加相关的元素并且触发客户端连接事件
-                await client.GetStream().WriteAndFlushAsync(requestBytes, 0, requestBytes.Length);
+                await client.Open().WriteAndFlushAsync(requestBytes, 0, requestBytes.Length);
                 Router.Logger.Debug("ClientID:" + ClientID.ToString()
                                                 + " AppId:" + appid.ToString() + " 已连接");
             }
@@ -396,7 +397,7 @@ namespace NSmartProxy.Client
                         var delayDispose =
                             Task.Delay(Global.DefaultWriteAckTimeout); //.ContinueWith(_ => client.Dispose());
 
-                        var readBytes = client.GetStream().ReadAsync(onebyte, 0, 1);
+                        var readBytes = client.Open().ReadAsync(onebyte, 0, 1);
                         //超时则dispose掉
                         var comletedTask = await Task.WhenAny(delayDispose, readBytes);
 

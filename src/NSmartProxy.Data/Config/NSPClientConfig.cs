@@ -16,6 +16,9 @@ namespace NSmartProxy.Data
         public bool UseServerControl = true; //启用服务端配置
         public string ProviderAddress;              //代理服务器地址
         public int ProviderWebPort;                    //web管理端的端口，默认12309 //TODO 暂时写死，以后再改
+        public bool ControlTlsEnabled = true;
+        public string ProviderCertThumbprint = "";
+        public bool AllowDangerousPorts = false;
         public List<ClientApp> Clients = new List<ClientApp>();//客户端app
     }
 }

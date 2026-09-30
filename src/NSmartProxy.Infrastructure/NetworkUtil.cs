@@ -229,7 +229,8 @@ namespace NSmartProxy
             }
             if (!isConnected) { Console.WriteLine("重试次数达到限制。"); throw new Exception("重试次数达到限制。"); }
 
-            var configStream = configClient.GetStream();
+            await ControlTls.HandshakeAsClientAsync(configClient, addess);
+            var configStream = configClient.Open();
             await configStream.WriteAsync(new byte[] { (byte)protocol }, 0, 1);
             await configStream.WriteAndFlushAsync(data, 0, data.Length);
             //Console.Write(protocol.ToString() + " proceed.");
